@@ -1,0 +1,8 @@
+sounddevice
+mlx-whisper
+rumps
+pynput
+pyperclip
+numpy
+pyobjc-framework-EventKit
+pyobjc-framework-Cocoa
