@@ -20,7 +20,7 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate {
         ]
         let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
         recorder.delegate = self
-        recorder.isMeteringEnabled = false
+        recorder.isMeteringEnabled = true
         recorder.prepareToRecord()
         self.preparedURL = fileURL
         self.recorder = recorder
@@ -38,6 +38,11 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate {
         self.recorder = nil
         self.preparedURL = nil
         return url
+    }
+
+    func currentPower() -> Float {
+        recorder?.updateMeters()
+        return recorder?.averagePower(forChannel: 0) ?? -160
     }
 
     func cancel() {

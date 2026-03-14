@@ -388,6 +388,9 @@ final class MuesliController: NSObject {
         do {
             try recorder.start()
             dictationStartedAt = Date()
+            indicator.powerProvider = { [weak self] in
+                self?.recorder.currentPower() ?? -160
+            }
             setState(.recording)
         } catch {
             fputs("[muesli-native] recorder start failed: \(error)\n", stderr)

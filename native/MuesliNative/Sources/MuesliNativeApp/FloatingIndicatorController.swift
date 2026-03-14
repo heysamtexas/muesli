@@ -41,6 +41,10 @@ final class FloatingIndicatorController {
     private var isHovered = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
+    private var barLayers: [CALayer] = []
+    private var amplitudeTimer: Timer?
+    private var smoothedAmplitude: CGFloat = 0
+    var powerProvider: (() -> Float)?
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -61,13 +65,13 @@ final class FloatingIndicatorController {
             createPanel(config: config)
         }
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
+
+        if previousState == .recording && state != .recording {
+            stopWaveformAnimation()
+        }
+
         let style = styleForState(state)
         let targetFrame = frameForState(state, config: config)
-        iconLabel.stringValue = style.icon
-        iconLabel.textColor = style.iconColor
-        textLabel.stringValue = style.title
-        textLabel.textColor = style.textColor
-        textLabel.isHidden = style.title.isEmpty
 
         let duration = transitionDuration(
             from: previousState,
@@ -90,13 +94,28 @@ final class FloatingIndicatorController {
             contentView.layer?.borderWidth = 1.0
             contentView.layer?.borderColor = style.border.cgColor
 
-            layoutLabels(
-                iconLabel: iconLabel,
-                textLabel: textLabel,
-                in: targetFrame.size,
-                hasTitle: !style.title.isEmpty,
-                animated: true
-            )
+            if state == .recording {
+                iconLabel.animator().alphaValue = 0
+                textLabel.animator().alphaValue = 0
+            } else {
+                iconLabel.isHidden = false
+                iconLabel.stringValue = style.icon
+                iconLabel.textColor = style.iconColor
+                textLabel.stringValue = style.title
+                textLabel.textColor = style.textColor
+                textLabel.isHidden = style.title.isEmpty
+                layoutLabels(
+                    iconLabel: iconLabel,
+                    textLabel: textLabel,
+                    in: targetFrame.size,
+                    hasTitle: !style.title.isEmpty,
+                    animated: true
+                )
+            }
+        }
+
+        if state == .recording {
+            startWaveformAnimation(in: targetFrame.size)
         }
 
         panel.orderFrontRegardless()
@@ -127,6 +146,7 @@ final class FloatingIndicatorController {
     }
 
     func close() {
+        stopWaveformAnimation()
         hoverExitWorkItem?.cancel()
         hoverExitWorkItem = nil
         panel?.close()
@@ -134,6 +154,90 @@ final class FloatingIndicatorController {
         contentView = nil
         iconLabel = nil
         textLabel = nil
+    }
+
+    // MARK: - Waveform Animation
+
+    private static let barCount = 5
+    private static let barWidth: CGFloat = 3.0
+    private static let barSpacing: CGFloat = 4.0
+    private static let barMinHeight: CGFloat = 5.0
+    private static let barMaxHeight: CGFloat = 26.0
+    private static let barMultipliers: [CGFloat] = [0.6, 0.85, 1.0, 0.85, 0.6]
+
+    private func startWaveformAnimation(in size: NSSize) {
+        let savedProvider = powerProvider
+        stopWaveformAnimation()
+        powerProvider = savedProvider
+        guard let contentView else { return }
+
+        let totalWidth = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
+        let startX = (size.width - totalWidth) / 2
+
+        for i in 0..<Self.barCount {
+            let bar = CALayer()
+            let x = startX + CGFloat(i) * (Self.barWidth + Self.barSpacing)
+            let height = Self.barMinHeight * Self.barMultipliers[i]
+            bar.frame = CGRect(
+                x: x,
+                y: (size.height - height) / 2,
+                width: Self.barWidth,
+                height: height
+            )
+            bar.cornerRadius = Self.barWidth / 2
+            bar.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+            bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            bar.position = CGPoint(x: x + Self.barWidth / 2, y: size.height / 2)
+
+            let anim = CABasicAnimation(keyPath: "transform.scale.y")
+            anim.fromValue = 0.3
+            anim.toValue = 1.0
+            anim.duration = 0.6
+            anim.autoreverses = true
+            anim.repeatCount = .infinity
+            anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            anim.beginTime = CACurrentMediaTime() + Double(i) * 0.07
+            bar.add(anim, forKey: "pulse")
+
+            contentView.layer?.addSublayer(bar)
+            barLayers.append(bar)
+        }
+
+        smoothedAmplitude = 0
+        amplitudeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.updateBarAmplitudes()
+            }
+        }
+    }
+
+    private func stopWaveformAnimation() {
+        amplitudeTimer?.invalidate()
+        amplitudeTimer = nil
+        for bar in barLayers {
+            bar.removeAllAnimations()
+            bar.removeFromSuperlayer()
+        }
+        barLayers.removeAll()
+        smoothedAmplitude = 0
+        powerProvider = nil
+    }
+
+    private func updateBarAmplitudes() {
+        let dB = CGFloat(powerProvider?() ?? -160)
+        let normalized = max(0, min(1, (dB + 40) / 35))
+        smoothedAmplitude = smoothedAmplitude * 0.5 + normalized * 0.5
+
+        let pillHeight = panel?.frame.height ?? 32
+        for (i, bar) in barLayers.enumerated() {
+            let multiplier = Self.barMultipliers[i]
+            let height = Self.barMinHeight + smoothedAmplitude * (Self.barMaxHeight - Self.barMinHeight) * multiplier
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            bar.bounds = CGRect(x: 0, y: 0, width: Self.barWidth, height: height)
+            bar.position = CGPoint(x: bar.position.x, y: pillHeight / 2)
+            CATransaction.commit()
+        }
     }
 
     private func createPanel(config: AppConfig) {
@@ -160,12 +264,12 @@ final class FloatingIndicatorController {
 
         let iconLabel = NSTextField(labelWithString: "")
         iconLabel.alignment = .center
-        iconLabel.font = NSFont.systemFont(ofSize: 18, weight: .bold)
+        iconLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
         contentView.addSubview(iconLabel)
 
         let textLabel = NSTextField(labelWithString: "")
         textLabel.alignment = .left
-        textLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        textLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
         contentView.addSubview(textLabel)
 
         panel.contentView = contentView
@@ -184,10 +288,10 @@ final class FloatingIndicatorController {
         let size: NSSize
         switch state {
         case .idle:
-            size = isHovered ? NSSize(width: 246, height: 46) : NSSize(width: 58, height: 30)
-        case .preparing: size = NSSize(width: 148, height: 46)
-        case .recording: size = NSSize(width: 164, height: 46)
-        case .transcribing: size = NSSize(width: 182, height: 46)
+            size = isHovered ? NSSize(width: 220, height: 36) : NSSize(width: 44, height: 28)
+        case .preparing: size = NSSize(width: 110, height: 32)
+        case .recording: size = NSSize(width: 80, height: 32)
+        case .transcribing: size = NSSize(width: 120, height: 32)
         }
 
         let origin: CGPoint
@@ -229,7 +333,7 @@ final class FloatingIndicatorController {
             )
         case .recording:
             return (
-                .colorWith(hex: 0xD32F2F, alpha: 0.96),
+                .colorWith(hex: 0xD32F2F, alpha: 0.72),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.24),
                 "🎤",
                 "Listening",
@@ -239,7 +343,7 @@ final class FloatingIndicatorController {
             )
         case .transcribing:
             return (
-                .colorWith(hex: 0xD99A11, alpha: 0.96),
+                .colorWith(hex: 0xD99A11, alpha: 0.72),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.24),
                 "✍️",
                 "Transcribing",
@@ -285,7 +389,7 @@ final class FloatingIndicatorController {
 
         let iconSize = iconLabel.attributedStringValue.size()
         let textSize = textLabel.attributedStringValue.size()
-        let gap: CGFloat = 10
+        let gap: CGFloat = 4
 
         let iconWidth = max(24, ceil(iconSize.width) + 2)
         let iconHeight = max(18, ceil(iconSize.height))
