@@ -274,6 +274,39 @@ final class DictationStore {
         try exec("DELETE FROM meetings", db: db)
     }
 
+    func updateMeeting(id: Int64, title: String, formattedNotes: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET title = ?, formatted_notes = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 3, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    func updateMeetingNotes(id: Int64, formattedNotes: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET formatted_notes = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
     func databasePath() -> URL {
         databaseURL
     }

@@ -14,7 +14,8 @@ struct MeetingsView: View {
 
                 MeetingDetailView(
                     meeting: appState.selectedMeeting,
-                    controller: controller
+                    controller: controller,
+                    appState: appState
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

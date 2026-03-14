@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "MuesliNative",
     platforms: [
-        .macOS("14.0"),
+        .macOS("14.2"),
     ],
     products: [
         .executable(name: "MuesliNativeApp", targets: ["MuesliNativeApp"]),

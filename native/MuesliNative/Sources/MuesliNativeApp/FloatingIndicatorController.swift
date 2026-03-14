@@ -29,6 +29,10 @@ private final class HoverIndicatorView: NSView {
     override func mouseExited(with event: NSEvent) {
         owner?.scheduleHoverExit()
     }
+
+    override func mouseDown(with event: NSEvent) {
+        owner?.handleClick()
+    }
 }
 
 @MainActor
@@ -44,10 +48,27 @@ final class FloatingIndicatorController {
     private var barLayers: [CALayer] = []
     private var amplitudeTimer: Timer?
     private var smoothedAmplitude: CGFloat = 0
+    private var isMeetingRecording = false
     var powerProvider: (() -> Float)?
+    var onStopMeeting: (() -> Void)?
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
+    }
+
+    func handleClick() {
+        if isMeetingRecording {
+            onStopMeeting?()
+        }
+    }
+
+    func setMeetingRecording(_ recording: Bool, config: AppConfig) {
+        isMeetingRecording = recording
+        if recording {
+            setState(.recording, config: config)
+        } else {
+            setState(.idle, config: config)
+        }
     }
 
     func setState(_ state: DictationState, config: AppConfig) {
@@ -94,7 +115,7 @@ final class FloatingIndicatorController {
             contentView.layer?.borderWidth = 1.0
             contentView.layer?.borderColor = style.border.cgColor
 
-            if state == .recording {
+            if state == .recording && !isMeetingRecording {
                 iconLabel.animator().alphaValue = 0
                 textLabel.animator().alphaValue = 0
             } else {
@@ -116,7 +137,7 @@ final class FloatingIndicatorController {
             }
         }
 
-        if state == .recording {
+        if state == .recording && !isMeetingRecording {
             startWaveformAnimation(in: targetFrame.size)
         }
 
@@ -292,7 +313,7 @@ final class FloatingIndicatorController {
         case .idle:
             size = isHovered ? NSSize(width: 220, height: 36) : NSSize(width: 44, height: 28)
         case .preparing: size = NSSize(width: 44, height: 28)
-        case .recording: size = NSSize(width: 80, height: 32)
+        case .recording: size = isMeetingRecording ? NSSize(width: 140, height: 36) : NSSize(width: 80, height: 32)
         case .transcribing: size = NSSize(width: 120, height: 32)
         }
 
@@ -337,8 +358,8 @@ final class FloatingIndicatorController {
             return (
                 .colorWith(hex: 0xD32F2F, alpha: 0.72),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.24),
-                "🎤",
-                "Listening",
+                isMeetingRecording ? "⏹" : "🎤",
+                isMeetingRecording ? "Stop Meeting" : "Listening",
                 .white,
                 .white,
                 1.0

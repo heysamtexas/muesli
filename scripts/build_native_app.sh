@@ -127,6 +127,8 @@ if ! security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
   exit 1
 fi
 
+# Sign nested binaries first, then the outer app
+codesign --force --sign "$SIGN_IDENTITY" "$APP_DIR/Contents/Resources/MuesliSystemAudio"
 codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
 
 rm -rf "$STAGED_APP_DIR"

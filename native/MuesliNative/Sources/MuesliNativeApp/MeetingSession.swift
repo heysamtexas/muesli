@@ -19,7 +19,7 @@ final class MeetingSession {
     private let runtime: RuntimePaths
     private let config: AppConfig
     private let transcriptionCoordinator: TranscriptionCoordinator
-    private let systemAudioRecorder: SystemAudioRecorder
+    private let systemAudioRecorder = SystemAudioRecorder(toolURL: nil)
 
     /// Current mic recorder (rotated every chunk interval)
     private var micRecorder = MicrophoneRecorder()
@@ -49,7 +49,6 @@ final class MeetingSession {
         self.runtime = runtime
         self.config = config
         self.transcriptionCoordinator = transcriptionCoordinator
-        self.systemAudioRecorder = SystemAudioRecorder(toolURL: runtime.systemAudioTool)
     }
 
     func start() throws {
@@ -108,6 +107,7 @@ final class MeetingSession {
         if let systemAudioURL {
             fputs("[meeting] transcribing system audio (batch)\n", stderr)
             systemResult = try await transcriptionCoordinator.transcribeMeeting(at: systemAudioURL, backend: backend)
+            try? FileManager.default.removeItem(at: systemAudioURL)
         } else {
             systemResult = SpeechTranscriptionResult(text: "", segments: [])
         }
@@ -119,14 +119,25 @@ final class MeetingSession {
             systemSegments: systemResult.segments,
             meetingStart: meetingStart
         )
+
+        // Auto-generate meeting title from transcript
+        let generatedTitle: String
+        if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: rawTranscript, config: config),
+           !autoTitle.isEmpty {
+            generatedTitle = autoTitle
+            fputs("[meeting] auto-generated title: \(generatedTitle)\n", stderr)
+        } else {
+            generatedTitle = title
+        }
+
         let formattedNotes = await MeetingSummaryClient.summarize(
             transcript: rawTranscript,
-            meetingTitle: title,
+            meetingTitle: generatedTitle,
             config: config
         )
 
         return MeetingSessionResult(
-            title: title,
+            title: generatedTitle,
             calendarEventID: calendarEventID,
             startTime: meetingStart,
             endTime: endTime,
@@ -134,7 +145,7 @@ final class MeetingSession {
             rawTranscript: rawTranscript,
             formattedNotes: formattedNotes,
             micAudioPath: nil,
-            systemAudioPath: systemAudioURL?.path
+            systemAudioPath: nil
         )
     }
 

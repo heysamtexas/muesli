@@ -1,50 +1,199 @@
+import AVFoundation
 import Foundation
+import ScreenCaptureKit
 
-final class SystemAudioRecorder {
-    private let toolURL: URL?
-    private var process: Process?
+final class SystemAudioRecorder: NSObject, SCStreamOutput {
+    private var stream: SCStream?
+    private var outputFile: FileHandle?
     private var outputURL: URL?
+    private var totalBytesWritten = 0
+    private(set) var isRecording = false
 
+    private static let sampleRate: Double = 16_000
+    private static let channels: Int = 1
+
+    /// Kept for API compat — no longer used
     init(toolURL: URL?) {
-        self.toolURL = toolURL
-    }
-
-    var isRecording: Bool {
-        process?.isRunning == true
+        super.init()
     }
 
     func start() throws {
-        guard process == nil else { return }
-        guard let toolURL else {
-            return
-        }
+        guard !isRecording else { return }
 
-        let outputDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-system-audio", isDirectory: true)
+        // Create output WAV file
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-system-audio", isDirectory: true)
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let outputURL = outputDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        let url = outputDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        guard let file = FileHandle(forWritingAtPath: url.path) else {
+            throw NSError(domain: "SystemAudio", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Could not open output file",
+            ])
+        }
+        file.write(Self.createWAVHeader(dataSize: 0))
+        outputFile = file
+        outputURL = url
+        totalBytesWritten = 0
+        isRecording = true
 
-        let process = Process()
-        process.executableURL = toolURL
-        process.arguments = [outputURL.path]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-
-        try process.run()
-        self.process = process
-        self.outputURL = outputURL
+        // Start SCStream async
+        Task {
+            do {
+                try await startStream()
+                fputs("[system-audio] SCStream capture started\n", stderr)
+            } catch {
+                fputs("[system-audio] SCStream start failed: \(error)\n", stderr)
+                isRecording = false
+            }
+        }
     }
 
     func stop() -> URL? {
-        defer {
-            process = nil
+        guard isRecording else { return nil }
+        isRecording = false
+
+        if let stream {
+            let semaphore = DispatchSemaphore(value: 0)
+            Task {
+                try? await stream.stopCapture()
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 3)
         }
-        guard let process else {
-            return nil
+        stream = nil
+
+        // Finalize WAV
+        if let outputFile {
+            let header = Self.createWAVHeader(dataSize: totalBytesWritten)
+            outputFile.seek(toFileOffset: 0)
+            outputFile.write(header)
+            outputFile.closeFile()
         }
-        if process.isRunning {
-            process.interrupt()
-            process.waitUntilExit()
-        }
+        outputFile = nil
+
+        fputs("[system-audio] capture stopped, \(totalBytesWritten) bytes written\n", stderr)
         return outputURL
+    }
+
+    // MARK: - SCStream setup
+
+    private func startStream() async throws {
+        // Get shareable content (required to create a filter)
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+
+        // Create a filter that captures all audio — use a display filter with audio only
+        guard let display = content.displays.first else {
+            throw NSError(domain: "SystemAudio", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "No display found for SCStream",
+            ])
+        }
+
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+
+        let config = SCStreamConfiguration()
+        // Audio-only: disable video capture
+        config.width = 2
+        config.height = 2
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1) // 1 fps minimum (can't set 0)
+        config.showsCursor = false
+
+        // Audio configuration
+        config.capturesAudio = true
+        config.sampleRate = Int(Self.sampleRate)
+        config.channelCount = Self.channels
+        config.excludesCurrentProcessAudio = true
+
+        let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.muesli.system-audio"))
+        try await stream.startCapture()
+        self.stream = stream
+    }
+
+    // MARK: - SCStreamOutput
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio, isRecording else { return }
+
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        let length = CMBlockBufferGetDataLength(blockBuffer)
+        guard length > 0 else { return }
+
+        // Get the audio format
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+        guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else { return }
+
+        // Extract raw audio bytes
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil, dataPointerOut: &dataPointer)
+        guard status == kCMBlockBufferNoErr, let dataPointer else { return }
+
+        // Convert float32 samples to int16 PCM for WAV
+        if asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0 {
+            let floatCount = length / MemoryLayout<Float>.size
+            let floatPointer = UnsafeRawPointer(dataPointer).bindMemory(to: Float.self, capacity: floatCount)
+
+            // If stereo, mix down to mono
+            let outputSamples: Int
+            if Int(asbd.mChannelsPerFrame) > 1 {
+                let channelCount = Int(asbd.mChannelsPerFrame)
+                outputSamples = floatCount / channelCount
+            } else {
+                outputSamples = floatCount
+            }
+
+            var int16Data = Data(count: outputSamples * 2)
+            int16Data.withUnsafeMutableBytes { rawBuffer in
+                let int16Buffer = rawBuffer.bindMemory(to: Int16.self)
+                let channels = Int(asbd.mChannelsPerFrame)
+                for i in 0..<outputSamples {
+                    var sample: Float
+                    if channels > 1 {
+                        // Average channels for mono mixdown
+                        var sum: Float = 0
+                        for ch in 0..<channels {
+                            sum += floatPointer[i * channels + ch]
+                        }
+                        sample = sum / Float(channels)
+                    } else {
+                        sample = floatPointer[i]
+                    }
+                    // Clamp and convert to int16
+                    let clamped = max(-1.0, min(1.0, sample))
+                    int16Buffer[i] = Int16(clamped * 32767.0)
+                }
+            }
+
+            outputFile?.write(int16Data)
+            totalBytesWritten += int16Data.count
+        } else {
+            // Already PCM int16, write directly
+            let rawData = Data(bytes: dataPointer, count: length)
+            outputFile?.write(rawData)
+            totalBytesWritten += length
+        }
+    }
+
+    // MARK: - WAV Header
+
+    private static func createWAVHeader(dataSize: Int) -> Data {
+        var header = Data()
+        let byteRate = Int(sampleRate) * channels * 16 / 8
+        let blockAlign = channels * 16 / 8
+
+        header.append(contentsOf: "RIFF".utf8)
+        header.append(contentsOf: withUnsafeBytes(of: UInt32(36 + dataSize).littleEndian) { Array($0) })
+        header.append(contentsOf: "WAVE".utf8)
+        header.append(contentsOf: "fmt ".utf8)
+        header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian) { Array($0) })
+        header.append(contentsOf: "data".utf8)
+        header.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
+        return header
     }
 }

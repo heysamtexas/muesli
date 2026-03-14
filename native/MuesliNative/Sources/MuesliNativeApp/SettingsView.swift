@@ -58,6 +58,42 @@ struct SettingsView: View {
                         }
                     }
 
+                    if appState.selectedMeetingSummaryBackend == .openAI {
+                        settingsSecureField(
+                            "API Key",
+                            text: appState.config.openAIAPIKey,
+                            placeholder: "sk-..."
+                        ) { newValue in
+                            controller.updateConfig { $0.openAIAPIKey = newValue }
+                        }
+
+                        settingsModelPicker(
+                            currentModel: appState.config.openAIModel,
+                            presets: SummaryModelPreset.openAIModels
+                        ) { newValue in
+                            controller.updateConfig { $0.openAIModel = newValue }
+                        }
+
+                        keyStatus(key: appState.config.openAIAPIKey)
+                    } else {
+                        settingsSecureField(
+                            "API Key",
+                            text: appState.config.openRouterAPIKey,
+                            placeholder: "sk-or-..."
+                        ) { newValue in
+                            controller.updateConfig { $0.openRouterAPIKey = newValue }
+                        }
+
+                        settingsModelPicker(
+                            currentModel: appState.config.openRouterModel,
+                            presets: SummaryModelPreset.openRouterModels
+                        ) { newValue in
+                            controller.updateConfig { $0.openRouterModel = newValue }
+                        }
+
+                        keyStatus(key: appState.config.openRouterAPIKey)
+                    }
+
                     settingsToggle(
                         "Auto-record calendar meetings",
                         isOn: appState.config.autoRecordMeetings
@@ -139,6 +175,62 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
+    private func settingsSecureField(_ title: String, text: String, placeholder: String, onChange: @escaping (String) -> Void) -> some View {
+        HStack {
+            Text(title)
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Spacer()
+            PastableSecureField(text: text, placeholder: placeholder, onChange: onChange)
+                .frame(maxWidth: 240, maxHeight: 22)
+        }
+    }
+
+    @ViewBuilder
+    private func settingsModelPicker(currentModel: String, presets: [SummaryModelPreset], onChange: @escaping (String) -> Void) -> some View {
+        HStack {
+            Text("Model")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Spacer()
+            Picker("", selection: Binding(
+                get: {
+                    // If current model matches a preset, select it; otherwise select first (default)
+                    if currentModel.isEmpty { return presets.first?.id ?? "" }
+                    return currentModel
+                },
+                set: { newValue in
+                    // If selecting the default (first preset), store empty string so MeetingSummaryClient uses its default
+                    if newValue == presets.first?.id {
+                        onChange("")
+                    } else {
+                        onChange(newValue)
+                    }
+                }
+            )) {
+                ForEach(presets, id: \.id) { preset in
+                    Text(preset.label).tag(preset.id)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: 240)
+        }
+    }
+
+    @ViewBuilder
+    private func keyStatus(key: String) -> some View {
+        HStack(spacing: 6) {
+            Spacer()
+            Circle()
+                .fill(key.isEmpty ? MuesliTheme.textTertiary : MuesliTheme.success)
+                .frame(width: 6, height: 6)
+            Text(key.isEmpty ? "No API key configured" : "Key configured")
+                .font(.system(size: 11))
+                .foregroundStyle(key.isEmpty ? MuesliTheme.textTertiary : MuesliTheme.success)
+        }
+    }
+
+    @ViewBuilder
     private func destructiveButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -154,5 +246,49 @@ struct SettingsView: View {
                 )
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Pastable Secure Field (NSViewRepresentable)
+
+/// A text field that supports Cmd+V paste and masks the value when not focused.
+private struct PastableSecureField: NSViewRepresentable {
+    let text: String
+    let placeholder: String
+    let onChange: (String) -> Void
+
+    func makeNSView(context: Context) -> NSSecureTextField {
+        let field = NSSecureTextField()
+        field.placeholderString = placeholder
+        field.font = .systemFont(ofSize: 13)
+        field.isBordered = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.delegate = context.coordinator
+        field.stringValue = text
+        return field
+    }
+
+    func updateNSView(_ nsView: NSSecureTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onChange: onChange)
+    }
+
+    class Coordinator: NSObject, NSTextFieldDelegate {
+        let onChange: (String) -> Void
+
+        init(onChange: @escaping (String) -> Void) {
+            self.onChange = onChange
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            onChange(field.stringValue)
+        }
     }
 }

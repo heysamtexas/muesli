@@ -52,6 +52,17 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
 
+        // Clean up leftover audio temp files from previous sessions
+        let tempAudioDir = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-system-audio")
+        if let files = try? FileManager.default.contentsOfDirectory(at: tempAudioDir, includingPropertiesForKeys: nil) {
+            for file in files {
+                try? FileManager.default.removeItem(at: file)
+            }
+            if !files.isEmpty {
+                fputs("[muesli-native] cleaned up \(files.count) leftover temp audio files\n", stderr)
+            }
+        }
+
         do {
             try workerClient.start()
         } catch {
@@ -63,6 +74,7 @@ final class MuesliController: NSObject {
         hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
         hotkeyMonitor.start()
+        indicator.onStopMeeting = { [weak self] in self?.stopMeetingRecording() }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -259,6 +271,31 @@ final class MuesliController: NSObject {
         selectMeetingSummaryBackend(option)
     }
 
+    func resummarize(meeting: MeetingRecord, completion: @escaping () -> Void) {
+        Task { [weak self] in
+            guard let self else { return }
+            // Regenerate title from transcript
+            let newTitle: String
+            if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: meeting.rawTranscript, config: self.config),
+               !autoTitle.isEmpty {
+                newTitle = autoTitle
+            } else {
+                newTitle = meeting.title
+            }
+            let notes = await MeetingSummaryClient.summarize(
+                transcript: meeting.rawTranscript,
+                meetingTitle: newTitle,
+                config: self.config
+            )
+            try? self.dictationStore.updateMeeting(id: meeting.id, title: newTitle, formattedNotes: notes)
+            await MainActor.run {
+                self.syncAppState()
+                self.historyWindowController?.reload()
+                completion()
+            }
+        }
+    }
+
     func clearDictationHistory() {
         try? dictationStore.clearDictations()
         statusBarController?.refresh()
@@ -299,7 +336,7 @@ final class MuesliController: NSObject {
             try meetingSession.start()
             activeMeetingSession = meetingSession
             statusBarController?.setStatus("Meeting: \(title)")
-            indicator.setState(.recording, config: config)
+            indicator.setMeetingRecording(true, config: config)
             statusBarController?.refresh()
         } catch {
             fputs("[muesli-native] failed to start meeting: \(error)\n", stderr)
@@ -309,6 +346,7 @@ final class MuesliController: NSObject {
 
     func stopMeetingRecording() {
         guard let activeMeetingSession else { return }
+        indicator.setMeetingRecording(false, config: config)
         setState(.transcribing)
         Task { [weak self] in
             guard let self else { return }

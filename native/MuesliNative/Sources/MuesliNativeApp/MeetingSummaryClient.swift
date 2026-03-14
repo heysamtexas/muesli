@@ -4,7 +4,13 @@ enum MeetingSummaryClient {
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private static let defaultOpenAIModel = "gpt-5-mini"
-    private static let defaultOpenRouterModel = "openai/gpt-5-mini"
+    private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
+
+    private static let titleInstructions = """
+    Generate a short, descriptive meeting title (3-7 words) from this transcript. \
+    Return ONLY the title text, nothing else. No quotes, no prefix, no explanation. \
+    Examples: "Q3 Sprint Planning", "Customer Onboarding Review", "Security Audit Discussion"
+    """
 
     private static let summaryInstructions = """
     You are a meeting notes assistant. Given a raw meeting transcript, produce structured meeting notes with the following sections:
@@ -42,7 +48,7 @@ enum MeetingSummaryClient {
         }
 
         let body: [String: Any] = [
-            "model": config.openAIModel.isEmpty ? (config.summaryModel.isEmpty ? defaultOpenAIModel : config.summaryModel) : config.openAIModel,
+            "model": config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel,
             "input": [
                 ["role": "system", "content": summaryInstructions],
                 ["role": "user", "content": "Meeting title: \(meetingTitle)\n\nRaw transcript:\n\(transcript)"],
@@ -79,7 +85,7 @@ enum MeetingSummaryClient {
             return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
         }
 
-        let model = config.openRouterModel.isEmpty ? (config.meetingSummaryModel.isEmpty ? defaultOpenRouterModel : config.meetingSummaryModel) : config.openRouterModel
+        let model = config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -147,6 +153,73 @@ enum MeetingSummaryClient {
             }
         }
         return nil
+    }
+
+    static func generateTitle(transcript: String, config: AppConfig) async -> String? {
+        let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.openAI.backend : config.meetingSummaryBackend).lowercased()
+
+        // Use a short prefix of the transcript for title generation (save tokens)
+        let truncated = String(transcript.prefix(1500))
+
+        if backend == MeetingSummaryBackendOption.openRouter.backend {
+            let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
+            guard !apiKey.isEmpty else { return nil }
+            let model = config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel
+            return await callChatCompletions(
+                url: openRouterURL,
+                apiKey: apiKey,
+                model: model,
+                systemPrompt: titleInstructions,
+                userPrompt: truncated,
+                maxTokens: 30,
+                extraHeaders: ["X-OpenRouter-Title": AppIdentity.displayName]
+            )
+        } else {
+            let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+            guard !apiKey.isEmpty else { return nil }
+            let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
+            return await callChatCompletions(
+                url: URL(string: "https://api.openai.com/v1/chat/completions")!,
+                apiKey: apiKey,
+                model: model,
+                systemPrompt: titleInstructions,
+                userPrompt: truncated,
+                maxTokens: 30,
+                extraHeaders: [:]
+            )
+        }
+    }
+
+    private static func callChatCompletions(
+        url: URL, apiKey: String, model: String,
+        systemPrompt: String, userPrompt: String,
+        maxTokens: Int, extraHeaders: [String: String]
+    ) async -> String? {
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": userPrompt],
+            ],
+            "max_tokens": maxTokens,
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        for (key, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            return extractOpenRouterText(from: json)?.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+        } catch {
+            return nil
+        }
     }
 
     private static func rawTranscriptFallback(transcript: String, meetingTitle: String) -> String {

@@ -3,6 +3,8 @@ import SwiftUI
 struct MeetingDetailView: View {
     let meeting: MeetingRecord?
     let controller: MuesliController
+    let appState: AppState
+    @State private var isSummarizing = false
 
     var body: some View {
         if let meeting {
@@ -11,6 +13,10 @@ struct MeetingDetailView: View {
 
                 Divider()
                     .background(MuesliTheme.surfaceBorder)
+
+                if isRawTranscript(meeting) {
+                    transcriptCTA
+                }
 
                 MeetingNotesView(markdown: notesContent(meeting))
             }
@@ -31,48 +37,114 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func header(_ meeting: MeetingRecord) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text(meeting.title)
-                    .font(.system(size: 26, weight: .bold))
-                    .foregroundStyle(MuesliTheme.textPrimary)
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text(meeting.title)
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text(formatMeta(meeting))
-                    .font(MuesliTheme.callout())
-                    .foregroundStyle(MuesliTheme.textSecondary)
+                    Text(formatMeta(meeting))
+                        .font(MuesliTheme.callout())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+
+                Spacer()
             }
 
-            Spacer()
-
             HStack(spacing: MuesliTheme.spacing8) {
-                pillButton("Copy notes") {
+                iconButton("doc.on.doc", label: "Copy notes") {
                     controller.copyToClipboard(notesContent(meeting))
                 }
-                pillButton("Copy transcript") {
+                iconButton("text.quote", label: "Copy transcript") {
                     controller.copyToClipboard(meeting.rawTranscript)
+                }
+                if isSummarizing {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Summarizing...")
+                            .font(.system(size: 11))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    .padding(.horizontal, MuesliTheme.spacing8)
+                } else {
+                    iconButton("sparkles", label: "Re-summarize") {
+                        isSummarizing = true
+                        controller.resummarize(meeting: meeting) {
+                            isSummarizing = false
+                        }
+                    }
                 }
             }
         }
         .padding(.horizontal, MuesliTheme.spacing24)
-        .padding(.vertical, MuesliTheme.spacing20)
+        .padding(.vertical, MuesliTheme.spacing16)
     }
 
     @ViewBuilder
-    private func pillButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ systemImage: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .padding(.horizontal, MuesliTheme.spacing12)
-                .padding(.vertical, MuesliTheme.spacing8)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                )
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10))
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, MuesliTheme.spacing8)
+            .padding(.vertical, 5)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
+    }
+
+    private var transcriptCTA: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            if hasApiKey {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(MuesliTheme.accent)
+                Text("Click Re-summarize to generate AI meeting notes and title from this transcript")
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            } else {
+                Image(systemName: "key.fill")
+                    .foregroundStyle(MuesliTheme.accent)
+                Text("Add your API key in Settings to generate meeting notes")
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                Spacer()
+                Button("Open Settings") {
+                    controller.openHistoryWindow(tab: .settings)
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.accent.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .padding(.horizontal, MuesliTheme.spacing24)
+        .padding(.top, MuesliTheme.spacing12)
+    }
+
+    private var hasApiKey: Bool {
+        let config = appState.config
+        if appState.selectedMeetingSummaryBackend == .openAI {
+            return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
+        } else {
+            return !config.openRouterAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
+        }
+    }
+
+    private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
+        meeting.formattedNotes.isEmpty || meeting.formattedNotes.contains("## Raw Transcript")
     }
 
     private func notesContent(_ meeting: MeetingRecord) -> String {
