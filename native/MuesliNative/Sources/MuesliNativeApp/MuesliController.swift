@@ -17,6 +17,8 @@ final class MuesliController: NSObject {
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
 
+    let appState = AppState()
+
     private(set) var config: AppConfig
     private(set) var selectedRuntime: TranscriptionRuntimeOption
     private(set) var selectedBackend: BackendOption
@@ -151,6 +153,19 @@ final class MuesliController: NSObject {
         historyWindowController?.reload()
         preferencesWindowController?.refresh()
         refreshIndicatorVisibility()
+        syncAppState()
+    }
+
+    func syncAppState() {
+        appState.dictationRows = (try? dictationStore.recentDictations(limit: 50)) ?? []
+        appState.meetingRows = (try? dictationStore.recentMeetings(limit: 50)) ?? []
+        appState.dictationStats = dictationStats()
+        appState.meetingStats = meetingStats()
+        appState.selectedBackend = selectedBackend
+        appState.selectedRuntime = selectedRuntime
+        appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
+        appState.config = config
+        appState.isMeetingRecording = isMeetingRecording()
     }
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
@@ -216,10 +231,20 @@ final class MuesliController: NSObject {
         }
     }
 
-    @objc func openPreferences() {
+    func openHistoryWindow(tab: DashboardTab) {
+        appState.selectedTab = tab
+        syncAppState()
         DispatchQueue.main.async { [weak self] in
-            self?.preferencesWindowController?.show()
+            self?.historyWindowController?.show()
         }
+    }
+
+    @objc func openPreferences() {
+        openHistoryWindow(tab: .settings)
+    }
+
+    @objc func openSettingsTab() {
+        openHistoryWindow(tab: .settings)
     }
 
     @objc func quitApp() {
@@ -260,12 +285,14 @@ final class MuesliController: NSObject {
         try? dictationStore.clearDictations()
         statusBarController?.refresh()
         historyWindowController?.reload()
+        syncAppState()
     }
 
     func clearMeetingHistory() {
         try? dictationStore.clearMeetings()
         statusBarController?.refresh()
         historyWindowController?.reload()
+        syncAppState()
     }
 
     func isMeetingRecording() -> Bool {
@@ -328,6 +355,7 @@ final class MuesliController: NSObject {
                 self.setState(.idle)
                 self.statusBarController?.refresh()
                 self.historyWindowController?.reload()
+                self.syncAppState()
             }
         }
     }
@@ -456,6 +484,7 @@ final class MuesliController: NSObject {
                 await MainActor.run {
                     self.statusBarController?.refresh()
                     self.historyWindowController?.reload()
+                    self.syncAppState()
                     PasteController.paste(text: text)
                     self.setState(.idle)
                 }
