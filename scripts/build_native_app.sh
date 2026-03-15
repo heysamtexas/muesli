@@ -64,6 +64,12 @@ if [[ -f "$ROOT/bridge/paste_text.py" ]]; then
   cp "$ROOT/bridge/paste_text.py" "$STAGED_APP_DIR/Contents/Resources/paste_text.py"
 fi
 
+# Bundle the transcribe module (required by worker.py)
+if [[ -d "$ROOT/transcribe" ]]; then
+  mkdir -p "$STAGED_APP_DIR/Contents/Resources/transcribe"
+  cp "$ROOT/transcribe/"*.py "$STAGED_APP_DIR/Contents/Resources/transcribe/"
+fi
+
 # Bundle Python runtime if available, otherwise use system venv
 if [[ -d "$DIST_DIR/python-runtime" ]]; then
   echo "Bundling Python runtime from $DIST_DIR/python-runtime..."
