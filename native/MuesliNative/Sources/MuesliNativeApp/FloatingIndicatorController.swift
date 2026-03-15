@@ -6,6 +6,8 @@ import Foundation
 private final class HoverIndicatorView: NSView {
     weak var owner: FloatingIndicatorController?
     private var trackingAreaRef: NSTrackingArea?
+    private var dragOrigin: NSPoint?
+    private var didDrag = false
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -31,7 +33,30 @@ private final class HoverIndicatorView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        owner?.handleClick()
+        dragOrigin = event.locationInWindow
+        didDrag = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window else { return }
+        didDrag = true
+        let current = event.locationInWindow
+        let frame = window.frame
+        let newOrigin = NSPoint(
+            x: frame.origin.x + (current.x - (dragOrigin?.x ?? current.x)),
+            y: frame.origin.y + (current.y - (dragOrigin?.y ?? current.y))
+        )
+        window.setFrameOrigin(newOrigin)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if didDrag {
+            owner?.savePosition()
+        } else {
+            owner?.handleClick()
+        }
+        dragOrigin = nil
+        didDrag = false
     }
 }
 
@@ -60,6 +85,13 @@ final class FloatingIndicatorController {
         if isMeetingRecording {
             onStopMeeting?()
         }
+    }
+
+    func savePosition() {
+        guard let origin = panel?.frame.origin else { return }
+        var config = configStore.load()
+        config.indicatorOrigin = CGPointCodable(x: origin.x, y: origin.y)
+        configStore.save(config)
     }
 
     func setMeetingRecording(_ recording: Bool, config: AppConfig) {

@@ -38,10 +38,14 @@ def load_wav(path: str) -> np.ndarray:
         audio = audio.reshape(-1, n_channels).mean(axis=1)
 
     if sample_rate != 16000:
-        from scipy.signal import resample
-
-        n_samples = int(len(audio) * 16000 / sample_rate)
-        audio = resample(audio, n_samples).astype(np.float32)
+        # Linear interpolation resample (no scipy dependency)
+        ratio = 16000 / sample_rate
+        n_samples = int(len(audio) * ratio)
+        indices = np.arange(n_samples) / ratio
+        left = np.floor(indices).astype(int)
+        right = np.minimum(left + 1, len(audio) - 1)
+        frac = (indices - left).astype(np.float32)
+        audio = (audio[left] * (1 - frac) + audio[right] * frac).astype(np.float32)
 
     return audio
 

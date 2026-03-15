@@ -17,9 +17,18 @@ struct RuntimePaths {
             let runtimeURL = bundleResource.appendingPathComponent("runtime.json")
             if fileManager.fileExists(atPath: runtimeURL.path) {
                 let data = try Data(contentsOf: runtimeURL)
-                let payload = try JSONSerialization.jsonObject(with: data) as? [String: String]
-                let repoRoot = URL(fileURLWithPath: payload?["repo_root"] ?? "")
-                let pythonExecutable = URL(fileURLWithPath: payload?["python_executable"] ?? "")
+                let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let repoRoot = URL(fileURLWithPath: payload?["repo_root"] as? String ?? "")
+
+                let pythonExecutable: URL
+                if payload?["bundled"] as? String == "true" || payload?["bundled"] as? Bool == true {
+                    // Bundled: python path is relative to Resources
+                    let relativePython = payload?["python_executable"] as? String ?? "python-runtime/bin/python3"
+                    pythonExecutable = bundleResource.appendingPathComponent(relativePython)
+                } else {
+                    pythonExecutable = URL(fileURLWithPath: payload?["python_executable"] as? String ?? "")
+                }
+
                 let workerScript = bundleResource.appendingPathComponent("worker.py")
                 return RuntimePaths(
                     repoRoot: repoRoot,

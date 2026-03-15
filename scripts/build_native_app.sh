@@ -64,12 +64,26 @@ if [[ -f "$ROOT/bridge/paste_text.py" ]]; then
   cp "$ROOT/bridge/paste_text.py" "$STAGED_APP_DIR/Contents/Resources/paste_text.py"
 fi
 
-cat > "$STAGED_APP_DIR/Contents/Resources/runtime.json" <<JSON
+# Bundle Python runtime if available, otherwise use system venv
+if [[ -d "$DIST_DIR/python-runtime" ]]; then
+  echo "Bundling Python runtime from $DIST_DIR/python-runtime..."
+  ditto "$DIST_DIR/python-runtime" "$STAGED_APP_DIR/Contents/Resources/python-runtime"
+  cat > "$STAGED_APP_DIR/Contents/Resources/runtime.json" <<JSON
+{
+  "repo_root": "/Applications/$APP_BUNDLE_NAME/Contents/Resources",
+  "python_executable": "python-runtime/bin/python3",
+  "bundled": true
+}
+JSON
+else
+  echo "No bundled Python runtime found at $DIST_DIR/python-runtime; using system venv."
+  cat > "$STAGED_APP_DIR/Contents/Resources/runtime.json" <<JSON
 {
   "repo_root": "$ROOT",
   "python_executable": "$PYTHON_BIN"
 }
 JSON
+fi
 
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
