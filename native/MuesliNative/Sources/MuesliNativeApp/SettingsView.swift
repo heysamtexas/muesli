@@ -100,6 +100,13 @@ struct SettingsView: View {
                     ) { newValue in
                         controller.updateConfig { $0.autoRecordMeetings = newValue }
                     }
+
+                    settingsToggle(
+                        "Notify when meeting app detected",
+                        isOn: appState.config.showMeetingDetectionNotification
+                    ) { newValue in
+                        controller.updateConfig { $0.showMeetingDetectionNotification = newValue }
+                    }
                 }
 
                 settingsSection("Data") {

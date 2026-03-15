@@ -30,6 +30,24 @@ final class CalendarMonitor {
         timer = nil
     }
 
+    /// Returns the current calendar event if one is happening right now
+    func currentEvent() -> UpcomingMeetingEvent? {
+        let now = Date()
+        let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-3600), end: now.addingTimeInterval(60), calendars: nil)
+        let events = store.events(matching: predicate)
+        for event in events {
+            guard let startDate = event.startDate, let endDate = event.endDate else { continue }
+            if startDate <= now && endDate > now {
+                return UpcomingMeetingEvent(
+                    id: event.eventIdentifier ?? "",
+                    title: event.title ?? "Meeting",
+                    startDate: startDate
+                )
+            }
+        }
+        return nil
+    }
+
     private func checkMeetings() {
         let now = Date()
         let end = now.addingTimeInterval(5 * 60)

@@ -13,6 +13,8 @@ final class MuesliController: NSObject {
     private let recorder = MicrophoneRecorder()
     private let indicator: FloatingIndicatorController
     private let calendarMonitor = CalendarMonitor()
+    private let micActivityMonitor = MicActivityMonitor()
+    private let meetingNotification = MeetingNotificationController()
 
     private var statusBarController: StatusBarController?
     private var historyWindowController: RecentHistoryWindowController?
@@ -98,6 +100,25 @@ final class MuesliController: NSObject {
         }
         calendarMonitor.start()
 
+        micActivityMonitor.onMeetingAppDetected = { [weak self] appName in
+            guard let self,
+                  !self.isMeetingRecording(),
+                  self.config.showMeetingDetectionNotification else { return }
+            let title = self.calendarMonitor.currentEvent()?.title ?? appName
+            self.meetingNotification.show(
+                title: "Meeting detected",
+                subtitle: title,
+                onStartRecording: { [weak self] in
+                    self?.micActivityMonitor.suppress()
+                    self?.startMeetingRecording(title: title)
+                },
+                onDismiss: { [weak self] in
+                    self?.micActivityMonitor.suppress()
+                }
+            )
+        }
+        micActivityMonitor.start()
+
         Task { [weak self] in
             guard let self else { return }
             await self.transcriptionCoordinator.preload(backend: self.selectedBackend)
@@ -118,6 +139,8 @@ final class MuesliController: NSObject {
         }
         hotkeyMonitor.stop()
         calendarMonitor.stop()
+        micActivityMonitor.stop()
+        meetingNotification.close()
         recorder.cancel()
         Task {
             await transcriptionCoordinator.shutdown()
