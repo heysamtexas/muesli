@@ -225,8 +225,11 @@ final class FloatingIndicatorController {
         }
 
         if state == .recording {
-            let waveformXOffset: CGFloat = isMeetingRecording ? 26 : 0
-            startWaveformAnimation(in: targetFrame.size, xOffset: waveformXOffset)
+            if isMeetingRecording {
+                startWaveformAnimation(in: targetFrame.size, xOffset: 26, barCount: 4)
+            } else {
+                startWaveformAnimation(in: targetFrame.size)
+            }
         }
 
         panel.orderFrontRegardless()
@@ -274,22 +277,25 @@ final class FloatingIndicatorController {
     private static let barSpacing: CGFloat = 4.0
     private static let barMinHeight: CGFloat = 5.0
     private static let barMaxHeight: CGFloat = 26.0
-    private static let barMultipliers: [CGFloat] = [0.6, 0.85, 1.0, 0.85, 0.6]
+    private static let barMultipliers5: [CGFloat] = [0.6, 0.85, 1.0, 0.85, 0.6]
+    private static let barMultipliers4: [CGFloat] = [0.7, 1.0, 1.0, 0.7]
 
-    private func startWaveformAnimation(in size: NSSize, xOffset: CGFloat = 0) {
+    private func startWaveformAnimation(in size: NSSize, xOffset: CGFloat = 0, barCount: Int? = nil) {
         let savedProvider = powerProvider
         stopWaveformAnimation()
         powerProvider = savedProvider
         guard let contentView else { return }
 
-        let totalWidth = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
+        let count = barCount ?? Self.barCount
+        let multipliers = count == 4 ? Self.barMultipliers4 : Self.barMultipliers5
+        let totalWidth = CGFloat(count) * Self.barWidth + CGFloat(count - 1) * Self.barSpacing
         let availableWidth = size.width - xOffset
         let startX = xOffset + (availableWidth - totalWidth) / 2
 
-        for i in 0..<Self.barCount {
+        for i in 0..<count {
             let bar = CALayer()
             let x = startX + CGFloat(i) * (Self.barWidth + Self.barSpacing)
-            let height = Self.barMinHeight * Self.barMultipliers[i]
+            let height = Self.barMinHeight * multipliers[i]
             bar.frame = CGRect(
                 x: x,
                 y: (size.height - height) / 2,
@@ -341,8 +347,9 @@ final class FloatingIndicatorController {
         smoothedAmplitude = smoothedAmplitude * 0.5 + normalized * 0.5
 
         let pillHeight = panel?.frame.height ?? 32
+        let multipliers = barLayers.count == 4 ? Self.barMultipliers4 : Self.barMultipliers5
         for (i, bar) in barLayers.enumerated() {
-            let multiplier = Self.barMultipliers[i]
+            let multiplier = multipliers[i]
             let height = Self.barMinHeight + smoothedAmplitude * (Self.barMaxHeight - Self.barMinHeight) * multiplier
             CATransaction.begin()
             CATransaction.setDisableActions(true)
