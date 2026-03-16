@@ -274,6 +274,7 @@ final class FloatingIndicatorController {
             } else {
                 iconLabel.isHidden = false
                 iconLabel.animator().alphaValue = 1
+                iconLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
                 iconLabel.stringValue = style.icon
                 iconLabel.textColor = style.iconColor
                 textLabel.stringValue = style.title
