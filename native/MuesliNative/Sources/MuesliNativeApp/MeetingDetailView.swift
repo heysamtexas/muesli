@@ -5,6 +5,19 @@ struct MeetingDetailView: View {
     let controller: MuesliController
     let appState: AppState
     @State private var isSummarizing = false
+    @State private var isEditingNotes = false
+    @State private var editableTitle: String
+    @State private var editableNotes: String
+    @State private var titleSaveTask: DispatchWorkItem?
+    @State private var notesSaveTask: DispatchWorkItem?
+
+    init(meeting: MeetingRecord?, controller: MuesliController, appState: AppState) {
+        self.meeting = meeting
+        self.controller = controller
+        self.appState = appState
+        _editableTitle = State(initialValue: meeting?.title ?? "")
+        _editableNotes = State(initialValue: meeting.map { Self.notesContent(for: $0) } ?? "")
+    }
 
     var body: some View {
         if let meeting {
@@ -18,7 +31,19 @@ struct MeetingDetailView: View {
                     transcriptCTA
                 }
 
-                MeetingNotesView(markdown: notesContent(meeting))
+                if isEditingNotes {
+                    TextEditor(text: $editableNotes)
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .padding(MuesliTheme.spacing24)
+                        .background(MuesliTheme.backgroundBase)
+                        .onChange(of: editableNotes) { _, _ in
+                            debounceSaveNotes(meetingID: meeting.id)
+                        }
+                } else {
+                    MeetingNotesView(markdown: Self.notesContent(for: meeting))
+                }
             }
             .background(MuesliTheme.backgroundBase)
         } else {
@@ -40,9 +65,16 @@ struct MeetingDetailView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text(meeting.title)
+                    TextField("Meeting Title", text: $editableTitle)
                         .font(.system(size: 26, weight: .bold))
                         .foregroundStyle(MuesliTheme.textPrimary)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
+                        }
+                        .onChange(of: editableTitle) { _, _ in
+                            debounceSaveTitle(meetingID: meeting.id)
+                        }
 
                     Text(formatMeta(meeting))
                         .font(MuesliTheme.callout())
@@ -54,7 +86,7 @@ struct MeetingDetailView: View {
 
             HStack(spacing: MuesliTheme.spacing8) {
                 iconButton("doc.on.doc", label: "Copy notes") {
-                    controller.copyToClipboard(notesContent(meeting))
+                    controller.copyToClipboard(Self.notesContent(for: meeting))
                 }
                 iconButton("text.quote", label: "Copy transcript") {
                     controller.copyToClipboard(meeting.rawTranscript)
@@ -68,13 +100,28 @@ struct MeetingDetailView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
                     .padding(.horizontal, MuesliTheme.spacing8)
-                } else {
+                } else if !isEditingNotes {
                     iconButton("sparkles", label: "Re-summarize") {
                         isSummarizing = true
                         controller.resummarize(meeting: meeting) {
                             isSummarizing = false
                         }
                     }
+                }
+
+                Spacer()
+
+                iconButton(
+                    isEditingNotes ? "checkmark.circle" : "pencil",
+                    label: isEditingNotes ? "Done" : "Edit"
+                ) {
+                    if isEditingNotes {
+                        notesSaveTask?.cancel()
+                        controller.updateMeetingNotes(id: meeting.id, notes: editableNotes)
+                    } else {
+                        editableNotes = Self.notesContent(for: meeting)
+                    }
+                    isEditingNotes.toggle()
                 }
             }
         }
@@ -147,11 +194,29 @@ struct MeetingDetailView: View {
         meeting.formattedNotes.isEmpty || meeting.formattedNotes.contains("## Raw Transcript")
     }
 
-    private func notesContent(_ meeting: MeetingRecord) -> String {
+    static func notesContent(for meeting: MeetingRecord) -> String {
         if meeting.formattedNotes.isEmpty {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes
+    }
+
+    private func debounceSaveTitle(meetingID: Int64) {
+        titleSaveTask?.cancel()
+        let title = editableTitle
+        let c = controller
+        let item = DispatchWorkItem { c.updateMeetingTitle(id: meetingID, title: title) }
+        titleSaveTask = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private func debounceSaveNotes(meetingID: Int64) {
+        notesSaveTask?.cancel()
+        let notes = editableNotes
+        let c = controller
+        let item = DispatchWorkItem { c.updateMeetingNotes(id: meetingID, notes: notes) }
+        notesSaveTask = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
 
     private func formatMeta(_ meeting: MeetingRecord) -> String {

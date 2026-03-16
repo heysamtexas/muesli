@@ -9,6 +9,10 @@ final class DictationStore {
         self.databaseURL = supportURL.appendingPathComponent("muesli.db")
     }
 
+    init(databaseURL: URL) {
+        self.databaseURL = databaseURL
+    }
+
     func migrateIfNeeded() throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -46,6 +50,24 @@ final class DictationStore {
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
         """
         try exec(createSQL, db: db)
+
+        // Migration: meeting folders
+        let foldersSQL = """
+        CREATE TABLE IF NOT EXISTS meeting_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+        try exec(foldersSQL, db: db)
+
+        // Add folder_id column to meetings (safe if already exists)
+        if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN folder_id INTEGER REFERENCES meeting_folders(id)", nil, nil, nil) != SQLITE_OK {
+            // Column may already exist — that's fine
+        }
+        // Index for folder lookups
+        let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_folder ON meetings(folder_id)", nil, nil, nil)
     }
 
     func insertDictation(
@@ -123,7 +145,7 @@ final class DictationStore {
         defer { sqlite3_close(db) }
 
         let sql = """
-        SELECT id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count
+        SELECT id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id
         FROM meetings
         ORDER BY id DESC
         LIMIT ?
@@ -137,6 +159,8 @@ final class DictationStore {
 
         var rows: [MeetingRecord] = []
         while sqlite3_step(statement) == SQLITE_ROW {
+            let folderID: Int64? = sqlite3_column_type(statement, 7) == SQLITE_NULL
+                ? nil : sqlite3_column_int64(statement, 7)
             rows.append(
                 MeetingRecord(
                     id: sqlite3_column_int64(statement, 0),
@@ -145,7 +169,8 @@ final class DictationStore {
                     durationSeconds: sqlite3_column_double(statement, 3),
                     rawTranscript: stringColumn(statement, index: 4),
                     formattedNotes: stringColumn(statement, index: 5),
-                    wordCount: Int(sqlite3_column_int(statement, 6))
+                    wordCount: Int(sqlite3_column_int(statement, 6)),
+                    folderID: folderID
                 )
             )
         }
@@ -301,6 +326,118 @@ final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    func updateMeetingTitle(id: Int64, title: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET title = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    // MARK: - Folder CRUD
+
+    @discardableResult
+    func createFolder(name: String) throws -> Int64 {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "INSERT INTO meeting_folders (name) VALUES (?)"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        return sqlite3_last_insert_rowid(db)
+    }
+
+    func renameFolder(id: Int64, name: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meeting_folders SET name = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    func deleteFolder(id: Int64) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        // Move meetings to unfiled
+        var s1: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE meetings SET folder_id = NULL WHERE folder_id = ?", -1, &s1, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        sqlite3_bind_int64(s1, 1, id)
+        sqlite3_step(s1)
+        sqlite3_finalize(s1)
+        // Delete folder
+        var s2: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM meeting_folders WHERE id = ?", -1, &s2, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        sqlite3_bind_int64(s2, 1, id)
+        sqlite3_step(s2)
+        sqlite3_finalize(s2)
+    }
+
+    func listFolders() throws -> [MeetingFolder] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "SELECT id, name, created_at FROM meeting_folders ORDER BY sort_order ASC, id ASC"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var rows: [MeetingFolder] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append(MeetingFolder(
+                id: sqlite3_column_int64(statement, 0),
+                name: stringColumn(statement, index: 1),
+                createdAt: stringColumn(statement, index: 2)
+            ))
+        }
+        return rows
+    }
+
+    func moveMeeting(id: Int64, toFolder folderID: Int64?) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET folder_id = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        if let folderID {
+            sqlite3_bind_int64(statement, 1, folderID)
+        } else {
+            sqlite3_bind_null(statement, 1)
+        }
         sqlite3_bind_int64(statement, 2, id)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)

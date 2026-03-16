@@ -30,7 +30,7 @@ final class CalendarMonitor {
         timer = nil
     }
 
-    /// Returns the current calendar event if one is happening right now
+    /// Returns the current calendar event if one is happening right now.
     func currentEvent() -> UpcomingMeetingEvent? {
         let now = Date()
         let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-3600), end: now.addingTimeInterval(60), calendars: nil)
@@ -46,6 +46,34 @@ final class CalendarMonitor {
             }
         }
         return nil
+    }
+
+    /// Returns the current or recently started event (within 15 minutes)
+    /// for meeting detection. Prefers currently active events over nearby ones.
+    func currentOrNearbyEvent() -> CalendarEventContext? {
+        let now = Date()
+        let searchStart = now.addingTimeInterval(-15 * 60)
+        let searchEnd = now.addingTimeInterval(5 * 60)
+        let predicate = store.predicateForEvents(withStart: searchStart, end: searchEnd, calendars: nil)
+        let events = store.events(matching: predicate)
+
+        var nearby: CalendarEventContext?
+        for event in events {
+            guard let startDate = event.startDate, let endDate = event.endDate else { continue }
+            let ctx = CalendarEventContext(
+                id: event.eventIdentifier ?? UUID().uuidString,
+                title: event.title ?? "Meeting"
+            )
+            // Currently active — return immediately
+            if startDate <= now && endDate > now {
+                return ctx
+            }
+            // Recently started (within 15 min) or about to start (within 5 min)
+            if nearby == nil {
+                nearby = ctx
+            }
+        }
+        return nearby
     }
 
     private func checkMeetings() {

@@ -4,112 +4,66 @@ import Foundation
 
 @MainActor
 final class MicActivityMonitor {
-    var onMeetingAppDetected: ((String) -> Void)?
-    private var timer: Timer?
-    private var lastDetectedBundleID: String?
-    private var suppressUntil: Date?
-    private var recentlyActivatedMeetingApp: (bundleID: String, name: String, at: Date)?
-    private var workspaceObserver: NSObjectProtocol?
+    /// Called when a meeting is detected. Passes the detection result.
+    var onMeetingDetected: ((MeetingDetection) -> Void)?
+    /// Injected by MuesliController — returns the current or nearby calendar event.
+    var calendarEventProvider: (() -> CalendarEventContext?)?
 
-    private static let meetingApps: [String: String] = [
-        "us.zoom.xos": "Zoom",
-        "us.zoom.ZoomPhone": "Zoom Phone",
-        "com.google.Chrome": "Chrome",
-        "com.apple.FaceTime": "FaceTime",
-        "com.microsoft.teams2": "Teams",
-        "com.microsoft.teams": "Teams",
-        "com.tinyspeck.slackmacgap": "Slack",
-        "com.brave.Browser": "Brave",
-        "company.thebrowser.Browser": "Arc",
-        "org.mozilla.firefox": "Firefox",
-        "com.apple.Safari": "Safari",
-        "com.webex.meetingmanager": "Webex",
-        "com.cisco.webexmeetingsapp": "Webex",
-    ]
+    let detector = MeetingDetector()
 
-    /// Our own bundle ID — never trigger for our own mic usage
-    private static let selfBundleID = Bundle.main.bundleIdentifier ?? "com.muesli.app"
+    private var micListenerDeviceID: AudioDeviceID = 0
+    private var micListenerBlock: AudioObjectPropertyListenerBlock?
+    private var deviceChangeListenerBlock: AudioObjectPropertyListenerBlock?
+    private var maintenanceTimer: Timer?
 
     func start() {
-        guard timer == nil else { return }
+        installMicListener()
+        installDeviceChangeListener()
 
-        // Watch for app activations to know when a meeting app comes to foreground
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  let bundleID = app.bundleIdentifier,
-                  let appName = Self.meetingApps[bundleID] else { return }
-            self?.recentlyActivatedMeetingApp = (bundleID, appName, Date())
-        }
-
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.poll()
-            }
+        // Slow maintenance timer for idle reset and cleanup (every 5s)
+        maintenanceTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.evaluateNow() }
         }
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        if let observer = workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
-            workspaceObserver = nil
-        }
+        removeMicListener()
+        removeDeviceChangeListener()
+        maintenanceTimer?.invalidate()
+        maintenanceTimer = nil
     }
 
-    /// Suppress notifications for a period (after dismiss or start recording)
     func suppress(for duration: TimeInterval = 120) {
-        suppressUntil = Date().addingTimeInterval(duration)
+        detector.suppress(for: duration)
     }
 
-    /// Call when Muesli's own dictation or meeting recording starts
     func suppressWhileActive() {
-        suppressUntil = Date.distantFuture
+        detector.suppressWhileActive()
     }
 
-    /// Call when dictation/recording ends — resume after short cooldown
     func resumeAfterCooldown() {
-        suppressUntil = Date().addingTimeInterval(15)
+        detector.resumeAfterCooldown()
     }
 
-    private func poll() {
-        guard isMicInUse() else {
-            // Mic not in use — reset detection so we can re-trigger next time
-            if lastDetectedBundleID != nil {
-                lastDetectedBundleID = nil
-            }
-            return
+    // MARK: - Evaluation
+
+    /// Build current signals from system state and evaluate.
+    private func evaluateNow() {
+        let signals = MeetingSignals(
+            micActive: isMicActive(),
+            calendarEvent: calendarEventProvider?(),
+            runningApps: currentRunningApps()
+        )
+        if let detection = detector.evaluate(signals) {
+            fputs("[mic-monitor] detected: \(detection.appName)" +
+                  (detection.meetingTitle.map { " (\($0))" } ?? "") + "\n", stderr)
+            onMeetingDetected?(detection)
         }
-
-        // Check if suppressed (our own dictation or user dismissed)
-        if let until = suppressUntil, Date() < until {
-            return
-        }
-
-        // Only trigger if a meeting app was activated recently (within last 5 minutes)
-        // This avoids triggering on our own mic usage
-        guard let recent = recentlyActivatedMeetingApp,
-              Date().timeIntervalSince(recent.at) < 300 else { return }
-
-        // Only trigger once per app session
-        if lastDetectedBundleID == recent.bundleID { return }
-
-        // Verify the meeting app is still running
-        let stillRunning = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == recent.bundleID
-        }
-        guard stillRunning else { return }
-
-        lastDetectedBundleID = recent.bundleID
-        fputs("[mic-monitor] meeting app detected: \(recent.name) (\(recent.bundleID))\n", stderr)
-        onMeetingAppDetected?(recent.name)
     }
 
-    private func isMicInUse() -> Bool {
+    // MARK: - CoreAudio Mic Listener (event-driven)
+
+    private func installMicListener() {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -121,7 +75,73 @@ final class MicActivityMonitor {
         guard AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject),
             &address, 0, nil, &size, &deviceID
-        ) == noErr else { return false }
+        ) == noErr, deviceID != 0 else { return }
+
+        micListenerDeviceID = deviceID
+
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async { self?.evaluateNow() }
+        }
+        micListenerBlock = block
+
+        var runningAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(deviceID, &runningAddress, nil, block)
+    }
+
+    private func removeMicListener() {
+        guard micListenerDeviceID != 0, let block = micListenerBlock else { return }
+        var runningAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(micListenerDeviceID, &runningAddress, nil, block)
+        micListenerDeviceID = 0
+        micListenerBlock = nil
+    }
+
+    // MARK: - Default Device Change Listener
+
+    private func installDeviceChangeListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.removeMicListener()
+                self?.installMicListener()
+            }
+        }
+        deviceChangeListenerBlock = block
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, nil, block
+        )
+    }
+
+    private func removeDeviceChangeListener() {
+        guard let block = deviceChangeListenerBlock else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, nil, block
+        )
+        deviceChangeListenerBlock = nil
+    }
+
+    // MARK: - System queries
+
+    private func isMicActive() -> Bool {
+        guard micListenerDeviceID != 0 else { return false }
 
         var isRunning: UInt32 = 0
         var runningAddress = AudioObjectPropertyAddress(
@@ -129,12 +149,19 @@ final class MicActivityMonitor {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        size = UInt32(MemoryLayout<UInt32>.size)
+        var size = UInt32(MemoryLayout<UInt32>.size)
 
         guard AudioObjectGetPropertyData(
-            deviceID, &runningAddress, 0, nil, &size, &isRunning
+            micListenerDeviceID, &runningAddress, 0, nil, &size, &isRunning
         ) == noErr else { return false }
 
         return isRunning != 0
+    }
+
+    private func currentRunningApps() -> [RunningAppInfo] {
+        NSWorkspace.shared.runningApplications.compactMap { app in
+            guard let bundleID = app.bundleIdentifier else { return nil }
+            return RunningAppInfo(bundleID: bundleID, isActive: app.isActive)
+        }
     }
 }

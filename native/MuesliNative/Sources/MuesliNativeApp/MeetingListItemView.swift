@@ -3,18 +3,51 @@ import SwiftUI
 struct MeetingListItemView: View {
     let record: MeetingRecord
     let isSelected: Bool
+    let folders: [MeetingFolder]
     let onSelect: () -> Void
+    let onMove: (Int64?) -> Void
+    @State private var isHovering = false
+
+    private var currentFolderName: String? {
+        guard let fid = record.folderID else { return nil }
+        return folders.first(where: { $0.id == fid })?.name
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            Text(record.title)
-                .font(MuesliTheme.headline())
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .lineLimit(2)
+            HStack(alignment: .top) {
+                Text(record.title)
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(2)
 
-            Text(formatMeta())
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
+                Spacer(minLength: 4)
+
+                // Visible folder move button
+                if !folders.isEmpty {
+                    folderMenuButton
+                }
+            }
+
+            HStack(spacing: MuesliTheme.spacing4) {
+                Text(formatMeta())
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+
+                // Current folder badge
+                if let name = currentFolderName {
+                    Text("\u{2022}")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    HStack(spacing: 2) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text(name)
+                            .font(MuesliTheme.caption())
+                    }
+                    .foregroundStyle(MuesliTheme.accent.opacity(0.8))
+                }
+            }
 
             Text(previewText())
                 .font(MuesliTheme.caption())
@@ -34,7 +67,50 @@ struct MeetingListItemView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .onHover { isHovering = $0 }
     }
+
+    // MARK: - Folder menu button
+
+    @ViewBuilder
+    private var folderMenuButton: some View {
+        Menu {
+            Button {
+                onMove(nil)
+            } label: {
+                Label("Unfiled", systemImage: "tray")
+            }
+            Divider()
+            ForEach(folders) { folder in
+                Button {
+                    onMove(folder.id)
+                } label: {
+                    HStack {
+                        Label(folder.name, systemImage: "folder")
+                        if record.folderID == folder.id {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: record.folderID != nil ? "folder.fill" : "folder.badge.plus")
+                .font(.system(size: 11))
+                .foregroundStyle(
+                    record.folderID != nil
+                        ? MuesliTheme.accent
+                        : (isHovering ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
+                )
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Move to folder")
+    }
+
+    // MARK: - Formatting
 
     private func formatMeta() -> String {
         let time = formatTime(record.startTime)

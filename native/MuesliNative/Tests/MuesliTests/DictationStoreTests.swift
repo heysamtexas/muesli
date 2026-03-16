@@ -5,18 +5,25 @@ import Foundation
 @Suite("DictationStore", .serialized)
 struct DictationStoreTests {
 
+    /// Creates a DictationStore backed by a temporary database file.
+    /// Each test gets its own isolated DB — no production data is touched.
+    private func makeStore() throws -> DictationStore {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-test-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        return store
+    }
+
     @Test("migration creates tables without error")
     func migration() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
+        let store = try makeStore()
         try store.migrateIfNeeded() // idempotent
     }
 
     @Test("insert and retrieve dictation")
     func insertAndRetrieve() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearDictations()
+        let store = try makeStore()
 
         let now = Date()
         try store.insertDictation(
@@ -34,9 +41,7 @@ struct DictationStoreTests {
 
     @Test("insert and retrieve meeting")
     func insertAndRetrieveMeeting() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearMeetings()
+        let store = try makeStore()
 
         let start = Date()
         try store.insertMeeting(
@@ -58,9 +63,7 @@ struct DictationStoreTests {
 
     @Test("update meeting notes and title")
     func updateMeeting() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearMeetings()
+        let store = try makeStore()
 
         let start = Date()
         try store.insertMeeting(
@@ -86,9 +89,7 @@ struct DictationStoreTests {
 
     @Test("update meeting notes only")
     func updateMeetingNotesOnly() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearMeetings()
+        let store = try makeStore()
 
         let start = Date()
         try store.insertMeeting(
@@ -112,9 +113,7 @@ struct DictationStoreTests {
 
     @Test("dictation stats aggregate correctly")
     func dictationStats() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearDictations()
+        let store = try makeStore()
 
         let now = Date()
         try store.insertDictation(text: "one two three", durationSeconds: 2.0, startedAt: now.addingTimeInterval(-2), endedAt: now)
@@ -128,9 +127,7 @@ struct DictationStoreTests {
 
     @Test("meeting stats aggregate correctly")
     func meetingStats() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearMeetings()
+        let store = try makeStore()
 
         let start = Date()
         try store.insertMeeting(
@@ -147,8 +144,7 @@ struct DictationStoreTests {
 
     @Test("clear dictations removes all records")
     func clearDictations() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
+        let store = try makeStore()
         let now = Date()
         try store.insertDictation(text: "to delete", durationSeconds: 1.0, startedAt: now, endedAt: now)
         try store.clearDictations()
@@ -157,8 +153,7 @@ struct DictationStoreTests {
 
     @Test("clear meetings removes all records")
     func clearMeetings() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
+        let store = try makeStore()
         let now = Date()
         try store.insertMeeting(title: "Del", calendarEventID: nil, startTime: now, endTime: now.addingTimeInterval(60), rawTranscript: "x", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
         try store.clearMeetings()
@@ -167,13 +162,177 @@ struct DictationStoreTests {
 
     @Test("recent dictations respects limit")
     func limitRespected() throws {
-        let store = DictationStore()
-        try store.migrateIfNeeded()
-        try store.clearDictations()
+        let store = try makeStore()
         let now = Date()
         for i in 0..<5 {
             try store.insertDictation(text: "Entry \(i)", durationSeconds: 1.0, startedAt: now.addingTimeInterval(Double(i)), endedAt: now.addingTimeInterval(Double(i) + 1))
         }
         #expect(try store.recentDictations(limit: 3).count == 3)
+    }
+
+    // MARK: - Editable Meeting Title
+
+    @Test("update meeting title only preserves notes")
+    func updateMeetingTitleOnly() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        try store.insertMeeting(
+            title: "Auto Title",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Some words",
+            formattedNotes: "## Notes\nKeep these",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let rows = try store.recentMeetings(limit: 1)
+        try store.updateMeetingTitle(id: rows.first!.id, title: "Edited Title")
+
+        let updated = try store.recentMeetings(limit: 1)
+        #expect(updated.first!.title == "Edited Title")
+        #expect(updated.first!.formattedNotes == "## Notes\nKeep these") // notes unchanged
+    }
+
+    // MARK: - Folder CRUD
+
+    @Test("create and list folders")
+    func createAndListFolders() throws {
+        let store = try makeStore()
+
+        let id1 = try store.createFolder(name: "Engineering")
+        let id2 = try store.createFolder(name: "Customer Calls")
+
+        let folders = try store.listFolders()
+        #expect(folders.count == 2)
+        #expect(folders.contains(where: { $0.id == id1 && $0.name == "Engineering" }))
+        #expect(folders.contains(where: { $0.id == id2 && $0.name == "Customer Calls" }))
+    }
+
+    @Test("rename folder")
+    func renameFolder() throws {
+        let store = try makeStore()
+
+        let id = try store.createFolder(name: "Old Name")
+        try store.renameFolder(id: id, name: "New Name")
+
+        let folders = try store.listFolders()
+        let folder = folders.first(where: { $0.id == id })
+        #expect(folder?.name == "New Name")
+    }
+
+    @Test("delete folder removes it from list")
+    func deleteFolderRemovesIt() throws {
+        let store = try makeStore()
+
+        let id = try store.createFolder(name: "To Delete")
+        #expect(try store.listFolders().contains(where: { $0.id == id }))
+
+        try store.deleteFolder(id: id)
+        let remaining = try store.listFolders()
+        #expect(!remaining.contains(where: { $0.id == id }))
+    }
+
+    // MARK: - Move Meeting to Folder
+
+    @Test("move meeting to folder sets folderID")
+    func moveMeetingToFolder() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Daily standup",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let folderID = try store.createFolder(name: "Team")
+        let meeting = try store.recentMeetings(limit: 1).first!
+        #expect(meeting.folderID == nil) // starts unfiled
+
+        try store.moveMeeting(id: meeting.id, toFolder: folderID)
+
+        let updated = try store.recentMeetings(limit: 1).first!
+        #expect(updated.folderID == folderID)
+    }
+
+    @Test("move meeting to nil unfiles it")
+    func moveMeetingToUnfiled() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        try store.insertMeeting(
+            title: "Filed Meeting",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "words",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let folderID = try store.createFolder(name: "Temp")
+        let meetingID = try store.recentMeetings(limit: 1).first!.id
+        try store.moveMeeting(id: meetingID, toFolder: folderID)
+        #expect(try store.recentMeetings(limit: 1).first!.folderID == folderID)
+
+        try store.moveMeeting(id: meetingID, toFolder: nil)
+        #expect(try store.recentMeetings(limit: 1).first!.folderID == nil)
+    }
+
+    @Test("delete folder moves its meetings to unfiled")
+    func deleteFolderUnfilesMeetings() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        let folderID = try store.createFolder(name: "Doomed Folder")
+
+        try store.insertMeeting(
+            title: "Meeting A",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "a",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let meetingID = try store.recentMeetings(limit: 1).first!.id
+        try store.moveMeeting(id: meetingID, toFolder: folderID)
+        #expect(try store.recentMeetings(limit: 1).first!.folderID == folderID)
+
+        try store.deleteFolder(id: folderID)
+
+        let meeting = try store.recentMeetings(limit: 1).first!
+        #expect(meeting.folderID == nil) // moved to unfiled
+        #expect(meeting.title == "Meeting A") // meeting still exists
+    }
+
+    @Test("new meetings have nil folderID by default")
+    func newMeetingsUnfiled() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        try store.insertMeeting(
+            title: "Unfiled Meeting",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "test",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let meeting = try store.recentMeetings(limit: 1).first!
+        #expect(meeting.folderID == nil)
     }
 }

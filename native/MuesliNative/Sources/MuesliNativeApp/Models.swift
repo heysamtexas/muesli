@@ -309,6 +309,13 @@ struct MeetingRecord: Identifiable {
     let rawTranscript: String
     let formattedNotes: String
     let wordCount: Int
+    let folderID: Int64?
+}
+
+struct MeetingFolder: Identifiable {
+    let id: Int64
+    var name: String
+    let createdAt: String
 }
 
 struct DictationStats {

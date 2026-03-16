@@ -18,6 +18,8 @@ final class AppState {
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
     var selectedMeetingID: Int64?
+    var folders: [MeetingFolder] = []
+    var selectedFolderID: Int64?  // nil = "All Meetings"
     var dictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
         averageWPM: 0, currentStreakDays: 0, longestStreakDays: 0

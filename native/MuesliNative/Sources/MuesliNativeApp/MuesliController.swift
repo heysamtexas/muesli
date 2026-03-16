@@ -99,11 +99,14 @@ final class MuesliController: NSObject {
         }
         calendarMonitor.start()
 
-        micActivityMonitor.onMeetingAppDetected = { [weak self] appName in
+        micActivityMonitor.calendarEventProvider = { [weak self] in
+            self?.calendarMonitor.currentOrNearbyEvent()
+        }
+        micActivityMonitor.onMeetingDetected = { [weak self] detection in
             guard let self,
                   !self.isMeetingRecording(),
                   self.config.showMeetingDetectionNotification else { return }
-            let title = self.calendarMonitor.currentEvent()?.title ?? appName
+            let title = detection.meetingTitle ?? detection.appName
             self.meetingNotification.show(
                 title: "Meeting detected",
                 subtitle: title,
@@ -199,6 +202,7 @@ final class MuesliController: NSObject {
     func syncAppState() {
         appState.dictationRows = (try? dictationStore.recentDictations(limit: 50)) ?? []
         appState.meetingRows = (try? dictationStore.recentMeetings(limit: 50)) ?? []
+        appState.folders = (try? dictationStore.listFolders()) ?? []
         appState.dictationStats = dictationStats()
         appState.meetingStats = meetingStats()
         appState.selectedBackend = selectedBackend
@@ -373,6 +377,45 @@ final class MuesliController: NSObject {
                 completion()
             }
         }
+    }
+
+    // MARK: - Meeting Editing
+
+    func updateMeetingTitle(id: Int64, title: String) {
+        try? dictationStore.updateMeetingTitle(id: id, title: title)
+        syncAppState()
+    }
+
+    func updateMeetingNotes(id: Int64, notes: String) {
+        try? dictationStore.updateMeetingNotes(id: id, formattedNotes: notes)
+        syncAppState()
+    }
+
+    // MARK: - Folder Management
+
+    @discardableResult
+    func createFolder(name: String) -> Int64? {
+        let id = try? dictationStore.createFolder(name: name)
+        syncAppState()
+        return id
+    }
+
+    func renameFolder(id: Int64, name: String) {
+        try? dictationStore.renameFolder(id: id, name: name)
+        syncAppState()
+    }
+
+    func deleteFolder(id: Int64) {
+        try? dictationStore.deleteFolder(id: id)
+        if appState.selectedFolderID == id {
+            appState.selectedFolderID = nil
+        }
+        syncAppState()
+    }
+
+    func moveMeeting(id: Int64, toFolder folderID: Int64?) {
+        try? dictationStore.moveMeeting(id: id, toFolder: folderID)
+        syncAppState()
     }
 
     func clearDictationHistory() {
