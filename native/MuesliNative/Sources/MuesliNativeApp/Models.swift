@@ -65,10 +65,24 @@ struct BackendOption: Equatable {
     // Default alias
     static let whisper = parakeetMultilingual
 
-    /// Models available for download and use. Nemotron excluded until RNNT decode is validated.
+    /// Models available for download and use.
     static let all: [BackendOption] = [
         .parakeetMultilingual, .parakeetEnglish,
         .whisperSmall, .whisperMedium, .whisperLargeTurbo,
+    ]
+
+    static let qwen3Asr = BackendOption(
+        backend: "qwen",
+        model: "FluidInference/qwen3-asr-0.6b-coreml",
+        label: "Qwen3 ASR",
+        sizeLabel: "~180 MB",
+        description: "Multilingual, 52 languages. CoreML autoregressive decoder on ANE.",
+        recommended: false
+    )
+
+    /// Models coming soon — shown greyed out in the Models tab.
+    static let comingSoon: [BackendOption] = [
+        .qwen3Asr, .nemotronStreaming,
     ]
 }
 

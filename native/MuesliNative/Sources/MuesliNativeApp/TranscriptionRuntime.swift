@@ -16,6 +16,7 @@ actor TranscriptionCoordinator {
     private let fluidTranscriber = FluidAudioTranscriber()
     private let whisperTranscriber = WhisperCppTranscriber()
     private var _nemotronTranscriber: Any?
+    private var vadManager: VadManager?
     private var activeBackend: String?
 
     @available(macOS 15, *)
@@ -28,6 +29,17 @@ actor TranscriptionCoordinator {
 
     func preload(backend: BackendOption, progress: ((Double, String?) -> Void)? = nil) async {
         activeBackend = backend.backend
+
+        // Initialize Silero VAD for meeting chunk silence detection
+        if vadManager == nil {
+            do {
+                vadManager = try await VadManager()
+                fputs("[muesli-native] Silero VAD loaded\n", stderr)
+            } catch {
+                fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
+            }
+        }
+
         switch backend.backend {
         case "fluidaudio":
             let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
@@ -66,7 +78,20 @@ actor TranscriptionCoordinator {
     }
 
     func transcribeMeetingChunk(at url: URL, backend: BackendOption, customWords: [[String: Any]] = []) async throws -> SpeechTranscriptionResult {
-        try await route(url: url, backend: backend)
+        // Run VAD to skip silent chunks (prevents hallucinations)
+        if let vadManager {
+            do {
+                let vadResults = try await vadManager.process(url)
+                let hasSpeech = vadResults.contains { $0.probability > 0.5 }
+                if !hasSpeech {
+                    fputs("[muesli-native] VAD: chunk is silent, skipping transcription\n", stderr)
+                    return SpeechTranscriptionResult(text: "", segments: [])
+                }
+            } catch {
+                fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
+            }
+        }
+        return try await route(url: url, backend: backend)
     }
 
     func shutdown() {
