@@ -1,11 +1,19 @@
 import AppKit
 import Foundation
+import Sparkle
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: MuesliController?
+    private(set) var updaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+
         do {
             let runtime = try RuntimePaths.resolve()
             AppFonts.registerIfNeeded(runtime: runtime)
@@ -13,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.applicationIconImage = image
             }
             let controller = MuesliController(runtime: runtime)
+            controller.updaterController = updaterController
             self.controller = controller
             controller.start()
         } catch {

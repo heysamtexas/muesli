@@ -84,16 +84,28 @@ spctl -a -vv "$APP_DIR" 2>&1 | head -2
 echo ""
 
 # --- Step 5: Create DMG ---
-echo "[5/6] Creating DMG..."
+echo "[5/7] Creating DMG..."
 "$ROOT/scripts/create_dmg.sh" "$APP_DIR" "$OUTPUT_DIR"
 DMG_PATH="$OUTPUT_DIR/Muesli-${VERSION}.dmg"
 
-# --- Step 6: GitHub Release ---
-echo "[6/6] Creating GitHub release v${VERSION}..."
+# --- Step 6: Generate appcast ---
+echo "[6/7] Generating appcast..."
+GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+if [[ -x "$GENERATE_APPCAST" ]]; then
+  "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$ROOT/site/appcast.xml"
+  echo "  Appcast updated at site/appcast.xml"
+else
+  echo "  Warning: generate_appcast not found — update site/appcast.xml manually"
+fi
+
+# --- Step 7: GitHub Release ---
+echo "[7/7] Creating GitHub release v${VERSION}..."
 TAG="v${VERSION}"
 
+git add site/appcast.xml
+git commit -m "Update appcast for v${VERSION}" --allow-empty
 git tag -a "$TAG" -m "Release ${VERSION}"
-git push origin "$TAG"
+git push origin main "$TAG"
 
 gh release create "$TAG" \
   --title "Muesli ${VERSION}" \

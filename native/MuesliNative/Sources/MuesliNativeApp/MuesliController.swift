@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import Sparkle
 
 @MainActor
 final class MuesliController: NSObject {
@@ -19,6 +20,7 @@ final class MuesliController: NSObject {
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
+    var updaterController: SPUStandardUpdaterController?
 
     let appState = AppState()
 
@@ -336,6 +338,10 @@ final class MuesliController: NSObject {
 
     @objc func openSettingsTab() {
         openHistoryWindow(tab: .settings)
+    }
+
+    @objc func checkForUpdates() {
+        updaterController?.checkForUpdates(nil)
     }
 
     @objc func quitApp() {

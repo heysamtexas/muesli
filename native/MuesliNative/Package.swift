@@ -12,6 +12,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.2"),
         .package(url: "https://github.com/exPHAT/SwiftWhisper.git", branch: "master"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
     ],
     targets: [
         .executableTarget(
@@ -19,6 +20,7 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "SwiftWhisper", package: "SwiftWhisper"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/MuesliNativeApp",
             swiftSettings: [
