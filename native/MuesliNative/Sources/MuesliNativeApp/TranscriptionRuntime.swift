@@ -18,6 +18,7 @@ actor TranscriptionCoordinator {
     private let whisperTranscriber = WhisperCppTranscriber()
     private var _nemotronTranscriber: Any?
     private var vadManager: VadManager?
+    private var diarizerManager: DiarizerManager?
     private var activeBackend: String?
 
     @available(macOS 15, *)
@@ -38,6 +39,19 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] Silero VAD loaded\n", stderr)
             } catch {
                 fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
+            }
+        }
+
+        // Initialize speaker diarization (lazy — model downloads on first use)
+        if diarizerManager == nil {
+            do {
+                let diarizer = DiarizerManager()
+                let models = try await DiarizerModels.download()
+                diarizer.initialize(models: models)
+                diarizerManager = diarizer
+                fputs("[muesli-native] Speaker diarization loaded\n", stderr)
+            } catch {
+                fputs("[muesli-native] Diarization load failed (non-critical): \(error)\n", stderr)
             }
         }
 
@@ -99,6 +113,24 @@ actor TranscriptionCoordinator {
         var result = try await route(url: url, backend: backend)
         result = removeFillers(result)
         return applyCustomWords(result, customWords: customWords)
+    }
+
+    func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
+        guard let diarizerManager, diarizerManager.isAvailable else {
+            fputs("[muesli-native] diarization not available, skipping\n", stderr)
+            return nil
+        }
+        fputs("[muesli-native] running speaker diarization on system audio...\n", stderr)
+        let converter = AudioConverter()
+        let samples = try converter.resampleAudioFile(url)
+        let result = try diarizerManager.performCompleteDiarization(samples, sampleRate: 16000)
+        let speakerCount = Set(result.segments.map(\.speakerId)).count
+        fputs("[muesli-native] diarization complete: \(result.segments.count) segments, \(speakerCount) speakers\n", stderr)
+        return result
+    }
+
+    func getVadManager() -> VadManager? {
+        vadManager
     }
 
     func shutdown() {

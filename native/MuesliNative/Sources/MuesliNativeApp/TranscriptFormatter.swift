@@ -1,21 +1,123 @@
+import FluidAudio
 import Foundation
 import MuesliCore
 
 enum TranscriptFormatter {
+    /// Backward-compatible merge without diarization.
     static func merge(micSegments: [SpeechSegment], systemSegments: [SpeechSegment], meetingStart: Date) -> String {
+        merge(micSegments: micSegments, systemSegments: systemSegments, diarizationSegments: nil, meetingStart: meetingStart)
+    }
+
+    /// Merge with optional speaker diarization for system audio.
+    static func merge(
+        micSegments: [SpeechSegment],
+        systemSegments: [SpeechSegment],
+        diarizationSegments: [TimedSpeakerSegment]?,
+        meetingStart: Date
+    ) -> String {
         let taggedMic = micSegments.map { TaggedSegment(segment: $0, speaker: "You") }
-        let taggedSystem = systemSegments.map { TaggedSegment(segment: $0, speaker: "Others") }
+
+        let taggedSystem: [TaggedSegment]
+        if let diarizationSegments, !diarizationSegments.isEmpty {
+            // Build speaker label map: raw ID → "Speaker 1", "Speaker 2", etc. in first-appearance order
+            var speakerLabelMap: [String: String] = [:]
+            var nextSpeakerNumber = 1
+            for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+                if speakerLabelMap[seg.speakerId] == nil {
+                    speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
+                    nextSpeakerNumber += 1
+                }
+            }
+
+            taggedSystem = systemSegments.map { segment in
+                let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
+                return TaggedSegment(segment: segment, speaker: speaker)
+            }
+        } else {
+            taggedSystem = systemSegments.map { TaggedSegment(segment: $0, speaker: "Others") }
+        }
+
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
+
+        // Consolidate consecutive segments from the same speaker into single lines
+        let consolidated = consolidate(tagged)
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         formatter.dateFormat = "HH:mm:ss"
 
-        return tagged.map { taggedSegment in
+        return consolidated.map { taggedSegment in
             let timestamp = meetingStart.addingTimeInterval(taggedSegment.segment.start)
-            return "[\(formatter.string(from: timestamp))] \(taggedSegment.speaker): \(taggedSegment.segment.text)"
+            let text = taggedSegment.segment.text.trimmingCharacters(in: .whitespaces)
+            return "[\(formatter.string(from: timestamp))] \(taggedSegment.speaker): \(text)"
         }.joined(separator: "\n")
+    }
+
+    /// Merge consecutive segments from the same speaker into single entries.
+    /// Prevents token-level fragmentation (e.g., each token as a separate line).
+    private static func consolidate(_ segments: [TaggedSegment]) -> [TaggedSegment] {
+        guard !segments.isEmpty else { return [] }
+
+        var result: [TaggedSegment] = []
+        var currentSpeaker = segments[0].speaker
+        var currentStart = segments[0].segment.start
+        var currentEnd = segments[0].segment.end
+        var currentText = segments[0].segment.text
+
+        for seg in segments.dropFirst() {
+            if seg.speaker == currentSpeaker {
+                // Same speaker — accumulate text
+                currentText += seg.segment.text
+                currentEnd = max(currentEnd, seg.segment.end)
+            } else {
+                // Speaker changed — emit accumulated segment
+                result.append(TaggedSegment(
+                    segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
+                    speaker: currentSpeaker
+                ))
+                currentSpeaker = seg.speaker
+                currentStart = seg.segment.start
+                currentEnd = seg.segment.end
+                currentText = seg.segment.text
+            }
+        }
+        // Emit last segment
+        result.append(TaggedSegment(
+            segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
+            speaker: currentSpeaker
+        ))
+
+        return result
+    }
+
+    /// Find the best-matching speaker for an ASR segment by time overlap with diarization segments.
+    private static func findSpeaker(
+        for segment: SpeechSegment,
+        in diarizationSegments: [TimedSpeakerSegment],
+        labelMap: [String: String]
+    ) -> String {
+        let segStart = Float(segment.start)
+        let segEnd = Float(max(segment.end, segment.start + 0.1)) // ensure non-zero duration
+
+        var bestOverlap: Float = 0
+        var bestSpeakerId: String?
+
+        for diarSeg in diarizationSegments {
+            let overlapStart = max(segStart, diarSeg.startTimeSeconds)
+            let overlapEnd = min(segEnd, diarSeg.endTimeSeconds)
+            let overlap = max(0, overlapEnd - overlapStart)
+
+            if overlap > bestOverlap {
+                bestOverlap = overlap
+                bestSpeakerId = diarSeg.speakerId
+            }
+        }
+
+        if let bestSpeakerId, bestOverlap > 0 {
+            return labelMap[bestSpeakerId] ?? "Others"
+        }
+        return "Others"
     }
 }
 

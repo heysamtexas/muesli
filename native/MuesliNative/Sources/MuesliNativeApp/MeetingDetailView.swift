@@ -104,8 +104,13 @@ struct MeetingDetailView: View {
                 } else if !isEditingNotes {
                     iconButton("sparkles", label: "Re-summarize") {
                         isSummarizing = true
-                        controller.resummarize(meeting: meeting) {
+                        controller.resummarize(meeting: meeting) { [meeting] in
                             isSummarizing = false
+                            // Refresh title from updated appState
+                            if let updated = appState.meetingRows.first(where: { $0.id == meeting.id }) {
+                                editableTitle = updated.title
+                                editableNotes = Self.notesContent(for: updated)
+                            }
                         }
                     }
                 }
@@ -184,7 +189,9 @@ struct MeetingDetailView: View {
 
     private var hasApiKey: Bool {
         let config = appState.config
-        if appState.selectedMeetingSummaryBackend == .openAI {
+        if appState.selectedMeetingSummaryBackend == .chatGPT {
+            return appState.isChatGPTAuthenticated
+        } else if appState.selectedMeetingSummaryBackend == .openAI {
             return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
         } else {
             return !config.openRouterAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil

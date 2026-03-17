@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 import MuesliCore
 
@@ -22,21 +23,19 @@ final class MeetingSession {
     private let transcriptionCoordinator: TranscriptionCoordinator
     private let systemAudioRecorder = SystemAudioRecorder()
 
-    /// Current mic recorder (rotated every chunk interval)
-    private var micRecorder = MicrophoneRecorder()
+    /// Streaming mic recorder with real-time buffer access (AVAudioEngine)
+    private var streamingMicRecorder = StreamingMicRecorder()
+    /// VAD controller for speech-boundary chunk rotation
+    private var vadController: StreamingVadController?
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
-        micRecorder.currentPower()
+        streamingMicRecorder.currentPower()
     }
-    /// Timer that triggers chunk rotation
-    private var chunkTimer: Timer?
     /// Accumulated mic transcript segments from completed chunks
     private var accumulatedMicSegments: [SpeechSegment] = []
     /// Track chunk start times for timestamp offsets
     private var currentChunkStartTime: Date?
-    /// How often to rotate mic recording (seconds)
-    private let chunkInterval: TimeInterval = 30
 
     private(set) var startTime: Date?
     private(set) var isRecording = false
@@ -68,33 +67,42 @@ final class MeetingSession {
     }
 
     func start() throws {
-        try micRecorder.prepare()
-        try micRecorder.start()
+        try streamingMicRecorder.prepare()
+        try streamingMicRecorder.start()
         try systemAudioRecorder.start()
         let now = Date()
         startTime = now
         currentChunkStartTime = now
         isRecording = true
 
-        // Start chunk timer on main thread
-        DispatchQueue.main.async { [weak self] in
+        // Set up VAD-driven chunk rotation
+        Task { [weak self] in
             guard let self else { return }
-            self.chunkTimer = Timer.scheduledTimer(withTimeInterval: self.chunkInterval, repeats: true) { [weak self] _ in
-                self?.rotateChunk()
+            if let vadManager = await self.transcriptionCoordinator.getVadManager() {
+                let controller = StreamingVadController(vadManager: vadManager)
+                controller.onChunkBoundary = { [weak self] in
+                    self?.rotateChunk()
+                }
+                controller.start()
+                self.vadController = controller
+
+                // Wire mic audio to VAD
+                self.streamingMicRecorder.onAudioBuffer = { [weak controller] samples in
+                    controller?.processAudio(samples)
+                }
+                fputs("[meeting] started with VAD-driven chunk rotation\n", stderr)
+            } else {
+                fputs("[meeting] VAD not available, using max-duration fallback only\n", stderr)
             }
         }
-
-        fputs("[meeting] started with \(chunkInterval)s chunk interval\n", stderr)
     }
 
     /// Abandon the recording — stop everything, delete temp files, don't transcribe.
     func discard() {
         isRecording = false
-        chunkTimer?.invalidate()
-        chunkTimer = nil
-        if let url = micRecorder.stop() {
-            try? FileManager.default.removeItem(at: url)
-        }
+        vadController?.stop()
+        vadController = nil
+        streamingMicRecorder.cancel()
         if let url = systemAudioRecorder.stop() {
             try? FileManager.default.removeItem(at: url)
         }
@@ -107,12 +115,12 @@ final class MeetingSession {
         let meetingStart = self.startTime ?? Date()
         let endTime = Date()
 
-        // Stop chunk timer
-        chunkTimer?.invalidate()
-        chunkTimer = nil
+        // Stop VAD controller
+        vadController?.stop()
+        vadController = nil
 
         // Stop mic and get last chunk
-        let lastMicURL = micRecorder.stop()
+        let lastMicURL = streamingMicRecorder.stop()
         let lastChunkStart = currentChunkStartTime ?? meetingStart
 
         // Stop system audio
@@ -135,9 +143,16 @@ final class MeetingSession {
 
         // Transcribe system audio (batch — this is the only wait after meeting ends)
         let systemResult: SpeechTranscriptionResult
+        var diarizationSegments: [TimedSpeakerSegment]?
         if let systemAudioURL {
             fputs("[meeting] transcribing system audio (batch)\n", stderr)
             systemResult = try await transcriptionCoordinator.transcribeMeeting(at: systemAudioURL, backend: backend, customWords: serializedCustomWords)
+
+            // Run speaker diarization on system audio (batch post-processing)
+            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
+                diarizationSegments = diarizationResult.segments
+            }
+
             try? FileManager.default.removeItem(at: systemAudioURL)
         } else {
             systemResult = SpeechTranscriptionResult(text: "", segments: [])
@@ -148,6 +163,7 @@ final class MeetingSession {
         let rawTranscript = TranscriptFormatter.merge(
             micSegments: accumulatedMicSegments,
             systemSegments: systemResult.segments,
+            diarizationSegments: diarizationSegments,
             meetingStart: meetingStart
         )
 
@@ -180,25 +196,15 @@ final class MeetingSession {
         )
     }
 
-    /// Called every chunkInterval seconds. Stops current mic recording,
-    /// starts a new one, and sends the completed chunk for transcription.
+    /// Called by VAD on speech boundaries or max-duration fallback.
+    /// Rotates the streaming mic file and sends the completed chunk for transcription.
     private func rotateChunk() {
         guard isRecording else { return }
         let meetingStart = self.startTime ?? Date()
         let chunkStart = currentChunkStartTime ?? meetingStart
 
-        // Stop current recorder, get WAV
-        let chunkURL = micRecorder.stop()
-
-        // Start new recorder immediately (minimize gap)
-        let newRecorder = MicrophoneRecorder()
-        do {
-            try newRecorder.prepare()
-            try newRecorder.start()
-        } catch {
-            fputs("[meeting] chunk rotation recorder start failed: \(error)\n", stderr)
-        }
-        micRecorder = newRecorder
+        // Rotate file — no gap, AVAudioEngine tap keeps running
+        let chunkURL = streamingMicRecorder.rotateFile()
         currentChunkStartTime = Date()
 
         // Transcribe the completed chunk async
