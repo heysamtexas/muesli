@@ -130,8 +130,27 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     exit 1
   fi
 
-  # Sign nested binaries and frameworks first (required before signing the bundle)
+  # Sign all nested binaries inside Sparkle framework (required for notarization)
   if [[ -d "$APP_DIR/Contents/MacOS/Sparkle.framework" ]]; then
+    # Deep-sign every executable inside Sparkle (Updater.app, Autoupdate, XPC services)
+    find "$APP_DIR/Contents/MacOS/Sparkle.framework" -type f -perm +111 | while read -r binary; do
+      # Skip non-Mach-O files (e.g., shell scripts, plists)
+      if file "$binary" | grep -q "Mach-O"; then
+        codesign --force --options runtime --timestamp \
+          --sign "$SIGN_IDENTITY" "$binary"
+      fi
+    done
+    # Sign the XPC bundles
+    find "$APP_DIR/Contents/MacOS/Sparkle.framework" -name "*.xpc" -type d | while read -r xpc; do
+      codesign --force --options runtime --timestamp \
+        --sign "$SIGN_IDENTITY" "$xpc"
+    done
+    # Sign the Updater.app bundle
+    find "$APP_DIR/Contents/MacOS/Sparkle.framework" -name "*.app" -type d | while read -r app; do
+      codesign --force --options runtime --timestamp \
+        --sign "$SIGN_IDENTITY" "$app"
+    done
+    # Sign the framework bundle itself
     codesign --force --options runtime --timestamp \
       --sign "$SIGN_IDENTITY" \
       "$APP_DIR/Contents/MacOS/Sparkle.framework"
