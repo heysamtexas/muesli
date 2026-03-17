@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 struct BackendOption: Equatable {
     let backend: String
@@ -290,47 +291,6 @@ struct CGPointCodable: Codable {
     enum CodingKeys: String, CodingKey {
         case x, y
     }
-}
-
-struct DictationRecord: Identifiable {
-    let id: Int64
-    let timestamp: String
-    let durationSeconds: Double
-    let rawText: String
-    let appContext: String
-    let wordCount: Int
-}
-
-struct MeetingRecord: Identifiable {
-    let id: Int64
-    let title: String
-    let startTime: String
-    let durationSeconds: Double
-    let rawTranscript: String
-    let formattedNotes: String
-    let wordCount: Int
-    let folderID: Int64?
-}
-
-struct MeetingFolder: Identifiable {
-    let id: Int64
-    var name: String
-    let createdAt: String
-}
-
-struct DictationStats {
-    let totalWords: Int
-    let totalSessions: Int
-    let averageWordsPerSession: Double
-    let averageWPM: Double
-    let currentStreakDays: Int
-    let longestStreakDays: Int
-}
-
-struct MeetingStats {
-    let totalWords: Int
-    let totalMeetings: Int
-    let averageWPM: Double
 }
 
 enum DictationState: String {

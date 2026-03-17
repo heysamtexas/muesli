@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct MeetingDetailView: View {
     let meeting: MeetingRecord?
@@ -191,11 +192,11 @@ struct MeetingDetailView: View {
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
-        meeting.formattedNotes.isEmpty || meeting.formattedNotes.contains("## Raw Transcript")
+        meeting.notesState != .structuredNotes
     }
 
     static func notesContent(for meeting: MeetingRecord) -> String {
-        if meeting.formattedNotes.isEmpty {
+        if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes

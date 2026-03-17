@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 struct RuntimePaths {
     let repoRoot: URL

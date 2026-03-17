@@ -1,6 +1,7 @@
 import AppKit
 import CoreText
 import Foundation
+import MuesliCore
 
 enum AppFonts {
     private static var didRegister = false

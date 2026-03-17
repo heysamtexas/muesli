@@ -1,5 +1,6 @@
 import EventKit
 import Foundation
+import MuesliCore
 
 struct UpcomingMeetingEvent {
     let id: String

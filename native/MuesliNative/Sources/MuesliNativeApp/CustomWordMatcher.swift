@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 /// Post-processing step that replaces transcribed words with entries from
 /// the user's personal dictionary using fuzzy matching.

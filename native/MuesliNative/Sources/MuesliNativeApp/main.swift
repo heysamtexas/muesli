@@ -1,4 +1,5 @@
 import AppKit
+import MuesliCore
 
 @main
 @MainActor

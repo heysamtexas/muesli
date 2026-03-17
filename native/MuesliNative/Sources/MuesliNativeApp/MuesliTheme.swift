@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 enum MuesliTheme {
     // MARK: - Colors — Backgrounds (layered)

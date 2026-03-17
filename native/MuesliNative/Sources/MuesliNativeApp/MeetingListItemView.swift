@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct MeetingListItemView: View {
     let record: MeetingRecord

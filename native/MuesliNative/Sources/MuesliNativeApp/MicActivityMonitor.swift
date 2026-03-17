@@ -1,6 +1,7 @@
 import AppKit
 import CoreAudio
 import Foundation
+import MuesliCore
 
 @MainActor
 final class MicActivityMonitor {

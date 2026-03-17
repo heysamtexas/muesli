@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct AboutView: View {
     let controller: MuesliController

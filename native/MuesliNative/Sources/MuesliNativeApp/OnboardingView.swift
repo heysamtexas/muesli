@@ -1,6 +1,7 @@
 import AVFoundation
 import ApplicationServices
 import SwiftUI
+import MuesliCore
 
 struct OnboardingView: View {
     let controller: MuesliController

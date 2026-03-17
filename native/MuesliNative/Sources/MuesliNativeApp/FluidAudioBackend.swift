@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// Native Swift transcription backend using FluidAudio's Parakeet TDT model
 /// running on Apple's Neural Engine (ANE) via CoreML.

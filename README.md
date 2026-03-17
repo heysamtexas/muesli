@@ -74,6 +74,116 @@ The transcription model (~250MB for Parakeet v3) downloads automatically on firs
 
 ---
 
+## Agent CLI
+
+Muesli bundles an agent-friendly local CLI inside the app bundle:
+
+- Installed path: `/Applications/Muesli.app/Contents/MacOS/muesli-cli`
+- Dev path: `native/MuesliNative/.build/arm64-apple-macosx/debug/muesli-cli`
+
+The CLI is designed for coding agents such as Codex and Claude Code. It exposes meetings, dictations, raw transcripts, and stored notes as stable JSON so an agent can analyze them with its own model and write notes back without requiring a user-supplied OpenAI or OpenRouter key.
+
+### What agents should do
+
+1. Discover the CLI:
+   ```bash
+   command -v muesli-cli || echo "/Applications/Muesli.app/Contents/MacOS/muesli-cli"
+   ```
+2. Inspect the command contract:
+   ```bash
+   /Applications/Muesli.app/Contents/MacOS/muesli-cli spec
+   ```
+3. List recent meetings or dictations:
+   ```bash
+   /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings list --limit 10
+   /Applications/Muesli.app/Contents/MacOS/muesli-cli dictations list --limit 10
+   ```
+4. Fetch a full record:
+   ```bash
+   /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings get 125
+   /Applications/Muesli.app/Contents/MacOS/muesli-cli dictations get 42
+   ```
+5. Summarize or analyze locally in the agent.
+6. Write improved meeting notes back:
+   ```bash
+   cat notes.md | /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings update-notes 125 --stdin
+   ```
+
+### Commands
+
+- `muesli-cli spec`
+- `muesli-cli info`
+- `muesli-cli meetings list [--limit N] [--folder-id ID]`
+- `muesli-cli meetings get <id>`
+- `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
+- `muesli-cli dictations list [--limit N]`
+- `muesli-cli dictations get <id>`
+
+### JSON contract
+
+All CLI commands return JSON on stdout.
+
+Success shape:
+
+```json
+{
+  "ok": true,
+  "command": "muesli-cli meetings get",
+  "data": {},
+  "meta": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-03-17T00:00:00Z",
+    "dbPath": "/Users/example/Library/Application Support/Muesli/muesli.db",
+    "warnings": []
+  }
+}
+```
+
+Failure shape:
+
+```json
+{
+  "ok": false,
+  "command": "muesli-cli meetings get 999",
+  "error": {
+    "code": "not_found",
+    "message": "No meeting exists with id 999.",
+    "fix": "Run `muesli-cli meetings list` to find a valid ID."
+  },
+  "meta": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-03-17T00:00:00Z",
+    "dbPath": "",
+    "warnings": []
+  }
+}
+```
+
+Important meeting fields:
+
+- `rawTranscript`
+- `formattedNotes`
+- `notesState`
+- `calendarEventID`
+- `micAudioPath`
+- `systemAudioPath`
+
+`notesState` values:
+
+- `missing`
+- `raw_transcript_fallback`
+- `structured_notes`
+
+### Notes for agent authors
+
+- The CLI is JSON-first and intended to be machine-consumed.
+- `formattedNotes` is the only write-back surface in v1.
+- `rawTranscript` is read-only and should be treated as source material.
+- If `notesState` is `missing` or `raw_transcript_fallback`, agents should prefer summarizing from `rawTranscript`.
+- Use `--db-path` or `--support-dir` only when the default Muesli data location is wrong.
+
+---
+
 ## Models
 
 | Model | Backend | Runtime | Size | Languages |
@@ -152,9 +262,16 @@ git clone https://github.com/pHequals7/muesli.git
 cd muesli
 swift build --package-path native/MuesliNative -c release
 swift test --package-path native/MuesliNative
+./scripts/test_packaged_cli.sh
 ```
 
-86 tests covering model configuration, custom word matching, filler removal, transcription routing, and data persistence.
+129 tests covering model configuration, custom word matching, filler removal, transcription routing, data persistence, and CLI contract/path-resolution logic.
+
+Current test scope:
+
+- Covered by tests: CLI command contract generation, CLI path-resolution logic, SQLite read/write behavior, note-state classification, and meeting/dictation retrieval/update flows.
+- Not covered by Swift unit tests: app-bundle packaging and copying `muesli-cli` into `/Applications/Muesli.app/Contents/MacOS`.
+- Packaging is verified by `scripts/test_packaged_cli.sh`, which builds an isolated app bundle, checks that `Contents/MacOS/muesli-cli` exists and is executable, and runs `muesli-cli spec` from the packaged path.
 
 Please open an issue before submitting large PRs.
 

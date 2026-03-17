@@ -1,5 +1,6 @@
 import Foundation
 import SwiftWhisper
+import MuesliCore
 
 /// Native Swift transcription backend using whisper.cpp via SwiftWhisper.
 /// Runs Whisper models on CPU + Metal GPU.

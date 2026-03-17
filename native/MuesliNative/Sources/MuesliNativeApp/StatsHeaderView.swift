@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct StatsHeaderView: View {
     let dictationStats: DictationStats

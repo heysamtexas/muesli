@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct DictationRowView: View {
     let record: DictationRecord

@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MuesliCore
 
 struct SpeechSegment: Sendable {
     let start: Double

@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum MeetingSummaryClient {
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!

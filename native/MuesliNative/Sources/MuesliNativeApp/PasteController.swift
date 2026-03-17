@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import MuesliCore
 
 enum PasteController {
     static func paste(text: String) {

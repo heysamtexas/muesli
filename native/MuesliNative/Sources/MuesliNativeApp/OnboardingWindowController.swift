@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MuesliCore
 
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {

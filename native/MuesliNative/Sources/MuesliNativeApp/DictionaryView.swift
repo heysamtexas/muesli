@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct DictionaryView: View {
     let appState: AppState

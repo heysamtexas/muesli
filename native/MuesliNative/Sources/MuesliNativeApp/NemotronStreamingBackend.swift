@@ -1,4 +1,5 @@
 import Accelerate
+import MuesliCore
 @preconcurrency import CoreML
 import Foundation
 

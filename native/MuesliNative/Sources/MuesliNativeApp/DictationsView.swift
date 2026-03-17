@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct DictationsView: View {
     let appState: AppState

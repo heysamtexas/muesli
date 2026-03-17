@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 /// Center-aligned waveform bars with a sinusoidal two-peak envelope
 /// that naturally suggests the letter "M". Uses |sin(πx)| over two

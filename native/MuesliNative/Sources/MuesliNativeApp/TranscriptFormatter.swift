@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum TranscriptFormatter {
     static func merge(micSegments: [SpeechSegment], systemSegments: [SpeechSegment], meetingStart: Date) -> String {

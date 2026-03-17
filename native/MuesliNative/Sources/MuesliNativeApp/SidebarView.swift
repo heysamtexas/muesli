@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct SidebarView: View {
     @Binding var selectedTab: DashboardTab

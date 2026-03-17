@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import Foundation
+import MuesliCore
 
 @MainActor
 private final class HoverIndicatorView: NSView {

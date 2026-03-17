@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("DictationStore", .serialized)
@@ -109,6 +110,100 @@ struct DictationStoreTests {
         let updated = try store.recentMeetings(limit: 1)
         #expect(updated.first!.title == "Original Title") // title unchanged
         #expect(updated.first!.formattedNotes == "New notes")
+    }
+
+    @Test("fetch dictation by id returns the full record")
+    func fetchDictationByID() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        try store.insertDictation(
+            text: "Capture this dictation",
+            durationSeconds: 4.2,
+            appContext: "Slack",
+            startedAt: now.addingTimeInterval(-4.2),
+            endedAt: now
+        )
+
+        let inserted = try store.recentDictations(limit: 1).first!
+        let fetched = try store.dictation(id: inserted.id)
+
+        #expect(fetched?.id == inserted.id)
+        #expect(fetched?.rawText == "Capture this dictation")
+        #expect(fetched?.appContext == "Slack")
+    }
+
+    @Test("fetch meeting by id returns audio paths and notes state")
+    func fetchMeetingByID() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        try store.insertMeeting(
+            title: "Recorded Meeting",
+            calendarEventID: "evt_123",
+            startTime: now,
+            endTime: now.addingTimeInterval(90),
+            rawTranscript: "Discussed roadmap items",
+            formattedNotes: "## Summary\nRoadmap reviewed",
+            micAudioPath: "/tmp/mic.wav",
+            systemAudioPath: "/tmp/system.wav"
+        )
+
+        let inserted = try store.recentMeetings(limit: 1).first!
+        let fetched = try store.meeting(id: inserted.id)
+
+        #expect(fetched?.id == inserted.id)
+        #expect(fetched?.calendarEventID == "evt_123")
+        #expect(fetched?.micAudioPath == "/tmp/mic.wav")
+        #expect(fetched?.systemAudioPath == "/tmp/system.wav")
+        #expect(fetched?.notesState == .structuredNotes)
+    }
+
+    @Test("meeting notes state distinguishes raw transcript fallback from structured notes")
+    func meetingNotesState() throws {
+        let missing = MeetingRecord(
+            id: 1,
+            title: "Missing",
+            startTime: "2026-03-17T10:00:00Z",
+            durationSeconds: 60,
+            rawTranscript: "Hello world",
+            formattedNotes: "",
+            wordCount: 2,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let fallback = MeetingRecord(
+            id: 2,
+            title: "Fallback",
+            startTime: "2026-03-17T10:00:00Z",
+            durationSeconds: 60,
+            rawTranscript: "Hello world",
+            formattedNotes: "# Fallback\n\n## Raw Transcript\n\nHello world",
+            wordCount: 2,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let structured = MeetingRecord(
+            id: 3,
+            title: "Structured",
+            startTime: "2026-03-17T10:00:00Z",
+            durationSeconds: 60,
+            rawTranscript: "Hello world",
+            formattedNotes: "## Summary\nNext steps captured",
+            wordCount: 2,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        #expect(missing.notesState == .missing)
+        #expect(fallback.notesState == .rawTranscriptFallback)
+        #expect(structured.notesState == .structuredNotes)
     }
 
     @Test("dictation stats aggregate correctly")

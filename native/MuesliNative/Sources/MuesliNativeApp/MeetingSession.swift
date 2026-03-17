@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 struct MeetingSessionResult {
     let title: String

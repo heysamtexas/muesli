@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MuesliCore
 
 struct ShortcutsView: View {
     let appState: AppState

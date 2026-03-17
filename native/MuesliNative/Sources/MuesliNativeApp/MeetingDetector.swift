@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 /// Input signals fed into the detector each evaluation cycle.
 struct MeetingSignals {

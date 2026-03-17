@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import MuesliCore
 
 final class HotkeyMonitor {
     var onPrepare: (() -> Void)?

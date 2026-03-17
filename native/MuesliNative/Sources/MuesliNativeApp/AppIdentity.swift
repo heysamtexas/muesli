@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum AppIdentity {
     private static let defaultName = "Muesli"
@@ -16,9 +17,7 @@ enum AppIdentity {
     }
 
     static var supportDirectoryURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support", isDirectory: true)
-            .appendingPathComponent(supportDirectoryName, isDirectory: true)
+        MuesliPaths.defaultSupportDirectoryURL(appName: supportDirectoryName)
     }
 
     private static func stringValue(for key: String) -> String? {

@@ -68,7 +68,9 @@ jobs:
         run: swift test --package-path native/MuesliNative
 
       - name: Build release binary
-        run: swift build --package-path native/MuesliNative -c release --product MuesliNativeApp
+        run: |
+          swift build --package-path native/MuesliNative -c release --product MuesliNativeApp
+          swift build --package-path native/MuesliNative -c release --product muesli-cli
 
       - name: Package app bundle
         run: |
@@ -77,7 +79,9 @@ jobs:
 
           mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
           cp "$BIN_DIR/MuesliNativeApp" "$APP_DIR/Contents/MacOS/Muesli"
+          cp "$BIN_DIR/muesli-cli" "$APP_DIR/Contents/MacOS/muesli-cli"
           chmod +x "$APP_DIR/Contents/MacOS/Muesli"
+          chmod +x "$APP_DIR/Contents/MacOS/muesli-cli"
           cp assets/menu_m_template.png "$APP_DIR/Contents/Resources/"
           cp assets/muesli.icns "$APP_DIR/Contents/Resources/"
           [ -d assets/fonts ] && cp -R assets/fonts "$APP_DIR/Contents/Resources/fonts"

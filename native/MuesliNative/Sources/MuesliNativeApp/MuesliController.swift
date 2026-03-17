@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Foundation
 import Sparkle
+import MuesliCore
 
 @MainActor
 final class MuesliController: NSObject {
@@ -32,6 +33,7 @@ final class MuesliController: NSObject {
     private var openWindowCount = 0
     private var lastExternalApp: NSRunningApplication?
     private var workspaceObserver: NSObjectProtocol?
+    private var dataDidChangeObserver: NSObjectProtocol?
 
     init(runtime: RuntimePaths) {
         let loadedConfig = configStore.load()
@@ -100,7 +102,20 @@ final class MuesliController: NSObject {
                 let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                 app != NSRunningApplication.current
             else { return }
-            self?.lastExternalApp = app
+            Task { @MainActor [weak self] in
+                self?.lastExternalApp = app
+            }
+        }
+        dataDidChangeObserver = DistributedNotificationCenter.default().addObserver(
+            forName: MuesliNotifications.dataDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.historyWindowController?.reload()
+                self.syncAppState()
+            }
         }
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
@@ -154,6 +169,10 @@ final class MuesliController: NSObject {
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
             self.workspaceObserver = nil
+        }
+        if let dataDidChangeObserver {
+            DistributedNotificationCenter.default().removeObserver(dataDidChangeObserver)
+            self.dataDidChangeObserver = nil
         }
         hotkeyMonitor.stop()
         calendarMonitor.stop()

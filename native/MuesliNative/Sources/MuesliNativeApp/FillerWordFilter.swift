@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 /// Removes filler words and verbal disfluencies from transcribed text.
 /// Applied as post-processing after ASR, before custom word matching.

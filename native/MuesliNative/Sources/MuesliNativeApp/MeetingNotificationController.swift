@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import Foundation
+import MuesliCore
 
 @MainActor
 final class MeetingNotificationController {

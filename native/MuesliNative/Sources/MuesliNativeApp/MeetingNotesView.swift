@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct MeetingNotesView: View {
     let markdown: String

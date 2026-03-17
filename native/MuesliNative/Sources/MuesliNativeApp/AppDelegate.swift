@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Sparkle
+import MuesliCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {

@@ -7,6 +7,7 @@ DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
 BUILD_CONFIG="${1:-release}"
 APP_BINARY="MuesliNativeApp"
+CLI_BINARY="muesli-cli"
 APP_NAME="${MUESLI_APP_NAME:-Muesli}"
 APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$APP_NAME}"
 APP_BUNDLE_NAME="${MUESLI_APP_BUNDLE_NAME:-$APP_NAME.app}"
@@ -17,6 +18,7 @@ STAGED_APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME"
 APP_DIR="$INSTALL_DIR/$APP_BUNDLE_NAME"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
+SKIP_SIGN="${MUESLI_SKIP_SIGN:-0}"
 
 mkdir -p "$DIST_DIR"
 
@@ -30,14 +32,27 @@ if [[ $status -ne 0 ]]; then
   exit $status
 fi
 
+set +e
+swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG" --product "$CLI_BINARY"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  echo "Swift CLI build failed." >&2
+  exit $status
+fi
+
 BIN_DIR="$(swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG" --show-bin-path)"
 APP_BIN="$BIN_DIR/$APP_BINARY"
+CLI_BIN="$BIN_DIR/$CLI_BINARY"
 
 rm -rf "$STAGED_APP_DIR"
 mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
 
 cp "$APP_BIN" "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
+cp "$CLI_BIN" "$STAGED_APP_DIR/Contents/MacOS/$CLI_BINARY"
+chmod +x "$STAGED_APP_DIR/Contents/MacOS/$CLI_BINARY"
 
 # Bundle assets
 cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
@@ -101,17 +116,21 @@ mkdir -p "$INSTALL_DIR"
 rm -rf "$APP_DIR"
 ditto "$STAGED_APP_DIR" "$APP_DIR"
 
-if ! security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
-  echo "Signing identity not found: $SIGN_IDENTITY" >&2
-  exit 1
-fi
+if [[ "$SKIP_SIGN" != "1" ]]; then
+  if ! security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
+    echo "Signing identity not found: $SIGN_IDENTITY" >&2
+    exit 1
+  fi
 
-# Sign with hardened runtime, secure timestamp, and entitlements for notarization
-ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"
-codesign --force --options runtime --timestamp \
-  --entitlements "$ENTITLEMENTS" \
-  --sign "$SIGN_IDENTITY" \
-  "$APP_DIR"
+  # Sign with hardened runtime, secure timestamp, and entitlements for notarization
+  ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"
+  codesign --force --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$SIGN_IDENTITY" \
+    "$APP_DIR"
+else
+  echo "Skipping codesign because MUESLI_SKIP_SIGN=1"
+fi
 
 rm -rf "$STAGED_APP_DIR"
 

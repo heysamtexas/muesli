@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 final class ConfigStore {
     private let configURL: URL

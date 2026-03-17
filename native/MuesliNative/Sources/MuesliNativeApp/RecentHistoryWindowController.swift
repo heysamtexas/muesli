@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import MuesliCore
 
 @MainActor
 final class RecentHistoryWindowController: NSObject, NSWindowDelegate {

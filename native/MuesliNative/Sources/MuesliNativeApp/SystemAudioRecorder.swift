@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import ScreenCaptureKit
+import MuesliCore
 
 final class SystemAudioRecorder: NSObject, SCStreamOutput {
     private var stream: SCStream?

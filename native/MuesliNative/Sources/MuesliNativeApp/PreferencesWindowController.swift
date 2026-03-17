@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MuesliCore
 
 @MainActor
 final class PreferencesWindowController: NSObject {

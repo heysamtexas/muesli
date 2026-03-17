@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
     case dictations

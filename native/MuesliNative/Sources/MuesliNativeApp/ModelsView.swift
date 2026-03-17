@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliCore
 
 struct ModelsView: View {
     let appState: AppState
