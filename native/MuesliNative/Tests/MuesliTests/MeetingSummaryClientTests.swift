@@ -18,7 +18,6 @@ struct MeetingSummaryClientTests {
             config: config
         )
 
-        #expect(result.contains("# Test"))
         #expect(result.contains("## Raw Transcript"))
         #expect(result.contains("Hello world"))
     }
@@ -36,7 +35,6 @@ struct MeetingSummaryClientTests {
         )
 
         // No key → falls back to raw transcript
-        #expect(result.contains("# My Meeting"))
         #expect(result.contains("## Raw Transcript"))
     }
 

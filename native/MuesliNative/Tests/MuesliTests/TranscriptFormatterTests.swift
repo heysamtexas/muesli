@@ -1,3 +1,4 @@
+import FluidAudio
 import Testing
 import Foundation
 import MuesliCore
@@ -65,5 +66,250 @@ struct TranscriptFormatterTests {
         )
         #expect(result.contains("Others: Remote speaker"))
         #expect(!result.contains("You"))
+    }
+
+    // MARK: - Token Consolidation
+
+    @Test("consolidates consecutive tokens from same speaker")
+    func consolidatesTokens() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        // Simulate token-level segments like Parakeet produces
+        let system = [
+            SpeechSegment(start: 1.0, end: 1.1, text: "Hel"),
+            SpeechSegment(start: 1.1, end: 1.2, text: "lo"),
+            SpeechSegment(start: 1.2, end: 1.4, text: " world"),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [], systemSegments: system, meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n")
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("Others: Hello world"))
+    }
+
+    @Test("consolidation splits on speaker change")
+    func consolidationSplitsOnSpeakerChange() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "I said"),
+        ]
+        let system = [
+            SpeechSegment(start: 2.0, end: 2.5, text: "They said"),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic, systemSegments: system, meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n")
+        #expect(lines.count == 2)
+        #expect(lines[0].contains("You:"))
+        #expect(lines[1].contains("Others:"))
+    }
+
+    @Test("single segment not affected by consolidation")
+    func singleSegmentConsolidation() {
+        let result = TranscriptFormatter.merge(
+            micSegments: [SpeechSegment(start: 0.0, end: 1.0, text: "Hello")],
+            systemSegments: [],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+        #expect(result.contains("You: Hello"))
+    }
+
+    // MARK: - Speaker Diarization
+
+    @Test("diarization assigns speaker labels from diarization segments")
+    func diarizationAssignsSpeakers() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [
+            SpeechSegment(start: 0.0, end: 5.0, text: "First person talking"),
+            SpeechSegment(start: 6.0, end: 10.0, text: "Second person talking"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 5.5),
+            makeDiarSeg(speakerId: "spk_1", start: 5.5, end: 11.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n")
+        #expect(lines.count == 2)
+        #expect(lines[0].contains("Speaker 1: First person talking"))
+        #expect(lines[1].contains("Speaker 2: Second person talking"))
+    }
+
+    @Test("diarization labels ordered by first appearance")
+    func diarizationLabelOrder() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [
+            SpeechSegment(start: 0.0, end: 3.0, text: "B speaks first"),
+            SpeechSegment(start: 4.0, end: 7.0, text: "A speaks second"),
+        ]
+        // spk_B appears first chronologically
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_B", start: 0.0, end: 3.5),
+            makeDiarSeg(speakerId: "spk_A", start: 3.5, end: 8.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        // spk_B should be "Speaker 1" since it appears first
+        #expect(result.contains("Speaker 1: B speaks first"))
+        #expect(result.contains("Speaker 2: A speaks second"))
+    }
+
+    @Test("diarization with no overlap falls back to Others")
+    func diarizationNoOverlapFallback() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [
+            SpeechSegment(start: 100.0, end: 105.0, text: "Orphan segment"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 10.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("Others: Orphan segment"))
+    }
+
+    @Test("nil diarization segments falls back to Others labels")
+    func nilDiarizationFallback() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [SpeechSegment(start: 0.0, end: 1.0, text: "Test")]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: nil,
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("Others: Test"))
+    }
+
+    @Test("empty diarization segments falls back to Others labels")
+    func emptyDiarizationFallback() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [SpeechSegment(start: 0.0, end: 1.0, text: "Test")]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: [],
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("Others: Test"))
+    }
+
+    @Test("diarization picks best overlap when multiple speakers overlap")
+    func diarizationBestOverlap() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        // ASR segment 2.0-8.0 overlaps with spk_A (0-4, overlap=2) and spk_B (3-10, overlap=5)
+        let system = [
+            SpeechSegment(start: 2.0, end: 8.0, text: "Who said this?"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_A", start: 0.0, end: 4.0),
+            makeDiarSeg(speakerId: "spk_B", start: 3.0, end: 10.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        // spk_B has more overlap (5s vs 2s)
+        #expect(result.contains("Speaker 2: Who said this?"))
+    }
+
+    @Test("diarization with mic segments interleaves correctly")
+    func diarizationWithMicInterleave() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [SpeechSegment(start: 5.0, end: 8.0, text: "My response")]
+        let system = [
+            SpeechSegment(start: 0.0, end: 4.0, text: "Remote question"),
+            SpeechSegment(start: 10.0, end: 14.0, text: "Remote follow-up"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 4.5),
+            makeDiarSeg(speakerId: "spk_0", start: 9.0, end: 15.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n")
+        #expect(lines.count == 3)
+        #expect(lines[0].contains("Speaker 1:"))
+        #expect(lines[1].contains("You:"))
+        #expect(lines[2].contains("Speaker 1:"))
+    }
+
+    @Test("diarization consolidates consecutive diarized tokens from same speaker")
+    func diarizationConsolidatesTokens() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        // Token-level segments all within same diarization speaker
+        let system = [
+            SpeechSegment(start: 1.0, end: 1.1, text: "Hel"),
+            SpeechSegment(start: 1.1, end: 1.2, text: "lo"),
+            SpeechSegment(start: 1.2, end: 1.3, text: " wor"),
+            SpeechSegment(start: 1.3, end: 1.4, text: "ld"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 5.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n")
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("Speaker 1: Hello world"))
+    }
+
+    @Test("three speakers identified correctly")
+    func threeSpeakers() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [
+            SpeechSegment(start: 0.0, end: 3.0, text: "Alice talks"),
+            SpeechSegment(start: 4.0, end: 7.0, text: "Bob talks"),
+            SpeechSegment(start: 8.0, end: 11.0, text: "Charlie talks"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "alice", start: 0.0, end: 3.5),
+            makeDiarSeg(speakerId: "bob", start: 3.5, end: 7.5),
+            makeDiarSeg(speakerId: "charlie", start: 7.5, end: 12.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("Speaker 1: Alice talks"))
+        #expect(result.contains("Speaker 2: Bob talks"))
+        #expect(result.contains("Speaker 3: Charlie talks"))
+    }
+
+    // MARK: - Helpers
+
+    private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
+        TimedSpeakerSegment(
+            speakerId: speakerId,
+            embedding: [],
+            startTimeSeconds: start,
+            endTimeSeconds: end,
+            qualityScore: 1.0
+        )
     }
 }
