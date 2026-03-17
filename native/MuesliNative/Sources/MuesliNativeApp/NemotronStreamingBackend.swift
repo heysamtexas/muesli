@@ -254,7 +254,7 @@ actor NemotronStreamingTranscriber {
 
         // Decode only the new tokens from this chunk
         let newTokens = Array(state.allTokens[tokensBefore...])
-        return decodeTokens(newTokens)
+        return decodeTokens(newTokens, trim: false)
     }
 
     // MARK: - Convenience (full-file transcription)
@@ -287,16 +287,16 @@ actor NemotronStreamingTranscriber {
 
     // MARK: - Token Decoding
 
-    private func decodeTokens(_ tokenIds: [Int]) -> String {
+    private func decodeTokens(_ tokenIds: [Int], trim: Bool = true) -> String {
         var pieces: [String] = []
         for id in tokenIds {
             if let piece = tokenizer[id] {
                 pieces.append(piece)
             }
         }
-        return pieces.joined()
+        let text = pieces.joined()
             .replacingOccurrences(of: "▁", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
     }
 
     // MARK: - Helpers

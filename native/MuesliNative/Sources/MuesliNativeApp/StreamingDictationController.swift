@@ -166,12 +166,6 @@ final class StreamingDictationController {
                 let elapsed = CFAbsoluteTimeGetCurrent() - start
 
                 if !newText.isEmpty {
-                    // Ensure space between chunks if needed
-                    if !fullTranscript.isEmpty
-                        && !fullTranscript.hasSuffix(" ")
-                        && !newText.hasPrefix(" ") {
-                        fullTranscript += " "
-                    }
                     fullTranscript += newText
                     fputs("[streaming-dictation] chunk → \"\(newText)\" (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
                     onPartialText?(fullTranscript)
