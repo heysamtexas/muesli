@@ -57,9 +57,9 @@ struct BackendOption: Equatable {
     static let nemotronStreaming = BackendOption(
         backend: "nemotron",
         model: "FluidInference/nemotron-speech-streaming-en-0.6b-coreml",
-        label: "Nemotron Streaming",
+        label: "Nemotron Streaming (Experimental)",
         sizeLabel: "~600 MB",
-        description: "NVIDIA streaming RNNT. English-only. Best for longer audio (10s+). ~0.3s latency.",
+        description: "Experimental. NVIDIA streaming RNNT. English-only. Handsfree mode only. Spacing may be inconsistent between chunks.",
         recommended: false
     )
 

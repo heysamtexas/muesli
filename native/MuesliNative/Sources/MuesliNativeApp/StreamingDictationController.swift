@@ -20,9 +20,12 @@ final class StreamingDictationController {
     private var streamState: NemotronStreamingTranscriber.StreamState?
     private var sampleBuffer: [Float] = []
     private let bufferLock = OSAllocatedUnfairLock()
+    private var chunkQueue: [[Float]] = []
+    private let queueLock = OSAllocatedUnfairLock()
+    private var isDraining = false
+    private let drainLock = OSAllocatedUnfairLock()
     private var fullTranscript = ""
     private var isActive = false
-    private var processingChunk = false
     private let chunkSamples = 8960  // 560ms at 16kHz
 
     init(transcriber: NemotronStreamingTranscriber) {
@@ -34,14 +37,25 @@ final class StreamingDictationController {
         isActive = true
         fullTranscript = ""
         sampleBuffer.removeAll()
+        chunkQueue.removeAll()
 
-        // Initialize streaming state
         Task {
+            // Initialize streaming state
             do {
                 streamState = try await transcriber.makeStreamState()
+                fputs("[streaming-dictation] stream state created\n", stderr)
             } catch {
                 fputs("[streaming-dictation] failed to create stream state: \(error)\n", stderr)
                 return
+            }
+
+            // Warmup: run a silent chunk to trigger ANE compilation
+            if var state = streamState {
+                fputs("[streaming-dictation] warming up ANE...\n", stderr)
+                let silence = [Float](repeating: 0, count: chunkSamples)
+                _ = try? await transcriber.transcribeChunk(samples: silence, state: &state)
+                streamState = state
+                fputs("[streaming-dictation] warmup done\n", stderr)
             }
 
             // Start mic recording — onAudioBuffer fires on AVAudioEngine's thread
@@ -52,7 +66,7 @@ final class StreamingDictationController {
             do {
                 try recorder.prepare()
                 try recorder.start()
-                fputs("[streaming-dictation] started\n", stderr)
+                fputs("[streaming-dictation] mic started\n", stderr)
             } catch {
                 fputs("[streaming-dictation] mic start failed: \(error)\n", stderr)
             }
@@ -64,32 +78,35 @@ final class StreamingDictationController {
         guard isActive else { return fullTranscript }
         isActive = false
 
-        // Stop mic
         let _ = recorder.stop()
 
-        // Process remaining buffered samples
+        // Collect remaining buffered samples
         let remaining: [Float] = bufferLock.withLock {
             let samples = sampleBuffer
             sampleBuffer.removeAll()
             return samples
         }
 
+        // Queue final padded chunk if any samples remain
         if !remaining.isEmpty {
-            // Pad to chunkSamples with zeros
             var padded = remaining
             if padded.count < chunkSamples {
                 padded.append(contentsOf: [Float](repeating: 0, count: chunkSamples - padded.count))
             }
-            // Process final chunk synchronously via semaphore
-            let sem = DispatchSemaphore(value: 0)
-            Task {
-                await processChunk(padded)
-                sem.signal()
+            queueLock.withLock {
+                chunkQueue.append(padded)
             }
-            sem.wait()
         }
 
-        fputs("[streaming-dictation] stopped, transcript: \(fullTranscript.prefix(80))...\n", stderr)
+        // Drain all remaining chunks synchronously
+        let sem = DispatchSemaphore(value: 0)
+        Task {
+            await self.drainQueue()
+            sem.signal()
+        }
+        sem.wait()
+
+        fputs("[streaming-dictation] stopped, transcript (\(fullTranscript.count) chars): \(fullTranscript.prefix(100))...\n", stderr)
         return fullTranscript
     }
 
@@ -99,43 +116,71 @@ final class StreamingDictationController {
     private func handleAudioBuffer(_ samples: [Float]) {
         guard isActive else { return }
 
-        var chunkToProcess: [Float]?
+        // Accumulate samples and extract full chunks
+        var newChunks: [[Float]] = []
 
         bufferLock.withLock {
             sampleBuffer.append(contentsOf: samples)
-            if sampleBuffer.count >= chunkSamples {
-                chunkToProcess = Array(sampleBuffer.prefix(chunkSamples))
+            while sampleBuffer.count >= chunkSamples {
+                newChunks.append(Array(sampleBuffer.prefix(chunkSamples)))
                 sampleBuffer.removeFirst(chunkSamples)
             }
         }
 
-        if let chunk = chunkToProcess, !processingChunk {
-            processingChunk = true
-            fputs("[streaming-dictation] chunk ready (\(chunk.count) samples), processing...\n", stderr)
-            Task { [weak self] in
-                await self?.processChunk(chunk)
-                self?.processingChunk = false
+        if !newChunks.isEmpty {
+            queueLock.withLock {
+                chunkQueue.append(contentsOf: newChunks)
+            }
+            // Kick off serial processing if not already running
+            let shouldStart = drainLock.withLock {
+                if isDraining { return false }
+                isDraining = true
+                return true
+            }
+            if shouldStart {
+                Task { [weak self] in
+                    await self?.drainQueue()
+                    self?.drainLock.withLock { self?.isDraining = false }
+                }
             }
         }
     }
 
-    /// Run one 560ms chunk through the Nemotron transcriber.
-    private func processChunk(_ samples: [Float]) async {
-        guard var state = streamState else {
-            fputs("[streaming-dictation] no stream state, skipping chunk\n", stderr)
-            return
-        }
-
-        do {
-            let newText = try await transcriber.transcribeChunk(samples: samples, state: &state)
-            streamState = state
-
-            if !newText.isEmpty {
-                fullTranscript += newText
-                onPartialText?(fullTranscript)
+    /// Process all queued chunks serially, one at a time.
+    private func drainQueue() async {
+        while true {
+            let chunk: [Float]? = queueLock.withLock {
+                chunkQueue.isEmpty ? nil : chunkQueue.removeFirst()
             }
-        } catch {
-            fputs("[streaming-dictation] chunk error: \(error)\n", stderr)
+            guard let chunk else { return }
+
+            guard var state = streamState else {
+                fputs("[streaming-dictation] no stream state, skipping chunk\n", stderr)
+                return
+            }
+
+            let start = CFAbsoluteTimeGetCurrent()
+            do {
+                let newText = try await transcriber.transcribeChunk(samples: chunk, state: &state)
+                streamState = state
+                let elapsed = CFAbsoluteTimeGetCurrent() - start
+
+                if !newText.isEmpty {
+                    // Ensure space between chunks if needed
+                    if !fullTranscript.isEmpty
+                        && !fullTranscript.hasSuffix(" ")
+                        && !newText.hasPrefix(" ") {
+                        fullTranscript += " "
+                    }
+                    fullTranscript += newText
+                    fputs("[streaming-dictation] chunk → \"\(newText)\" (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
+                    onPartialText?(fullTranscript)
+                } else {
+                    fputs("[streaming-dictation] chunk → (silence) (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
+                }
+            } catch {
+                fputs("[streaming-dictation] chunk error: \(error)\n", stderr)
+            }
         }
     }
 }

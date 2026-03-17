@@ -688,21 +688,8 @@ final class MuesliController: NSObject {
         fputs("[muesli-native] recording start\n", stderr)
         micActivityMonitor.suppressWhileActive()
 
-        // Nemotron streaming: live text at cursor as user speaks
-        if selectedBackend.backend == "nemotron" {
-            if #available(macOS 15, *) {
-                // Set streaming flag SYNCHRONOUSLY so handleStop knows we're in streaming mode
-                isNemotronStreaming = true
-                previousStreamText = ""
-                dictationStartedAt = Date()
-                setState(.recording)
-                fputs("[muesli-native] Nemotron streaming mode active\n", stderr)
-                startNemotronStreamingAsync()
-                return
-            }
-        }
-
-        // Standard path: record → stop → transcribe → paste
+        // Standard path for all backends in hold-to-talk mode
+        // (Nemotron streaming is only used in handsfree/toggle mode)
         do {
             try recorder.start()
             dictationStartedAt = Date()
@@ -765,6 +752,20 @@ final class MuesliController: NSObject {
         if isMeetingRecording() { return }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         micActivityMonitor.suppressWhileActive()
+
+        // Nemotron streaming: live text at cursor in handsfree mode too
+        if selectedBackend.backend == "nemotron" {
+            if #available(macOS 15, *) {
+                isNemotronStreaming = true
+                previousStreamText = ""
+                dictationStartedAt = Date()
+                indicator.setToggleDictation(true, config: config)
+                fputs("[muesli-native] Nemotron streaming toggle mode active\n", stderr)
+                startNemotronStreamingAsync()
+                return
+            }
+        }
+
         do {
             try recorder.prepare()
             try recorder.start()
