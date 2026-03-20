@@ -1,6 +1,58 @@
 import FluidAudio
 import Foundation
 import MuesliCore
+import os
+
+final class MeetingChunkCollector {
+    private struct State {
+        var tasks: [Task<SpeechSegment?, Never>] = []
+        var isClosed = false
+    }
+
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    func add(_ task: Task<SpeechSegment?, Never>) -> Bool {
+        lock.withLock { state in
+            guard !state.isClosed else { return false }
+            state.tasks.append(task)
+            return true
+        }
+    }
+
+    func closeAndDrainSortedSegments() async -> [SpeechSegment] {
+        let tasksToAwait = lock.withLock { state in
+            state.isClosed = true
+            let pendingTasks = state.tasks
+            state.tasks.removeAll()
+            return pendingTasks
+        }
+
+        var segments: [SpeechSegment] = []
+        for task in tasksToAwait {
+            if let segment = await task.value {
+                segments.append(segment)
+            }
+        }
+
+        return segments.sorted { lhs, rhs in
+            if lhs.start == rhs.start {
+                return lhs.text < rhs.text
+            }
+            return lhs.start < rhs.start
+        }
+    }
+
+    func cancelAll() {
+        let tasksToCancel = lock.withLock { state in
+            state.isClosed = true
+            let pendingTasks = state.tasks
+            state.tasks.removeAll()
+            return pendingTasks
+        }
+
+        tasksToCancel.forEach { $0.cancel() }
+    }
+}
 
 struct MeetingSessionResult {
     let title: String
@@ -27,15 +79,14 @@ final class MeetingSession {
     private var streamingMicRecorder = StreamingMicRecorder()
     /// VAD controller for speech-boundary chunk rotation
     private var vadController: StreamingVadController?
+    private let micChunkCollector = MeetingChunkCollector()
+    /// Track chunk start times for timestamp offsets
+    private var currentChunkStartTime: Date?
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
         streamingMicRecorder.currentPower()
     }
-    /// Accumulated mic transcript segments from completed chunks
-    private var accumulatedMicSegments: [SpeechSegment] = []
-    /// Track chunk start times for timestamp offsets
-    private var currentChunkStartTime: Date?
 
     private(set) var startTime: Date?
     private(set) var isRecording = false
@@ -66,10 +117,10 @@ final class MeetingSession {
         }
     }
 
-    func start() throws {
+    func start() async throws {
         try streamingMicRecorder.prepare()
         try streamingMicRecorder.start()
-        try systemAudioRecorder.start()
+        try await systemAudioRecorder.start()
         let now = Date()
         startTime = now
         currentChunkStartTime = now
@@ -106,7 +157,7 @@ final class MeetingSession {
         if let url = systemAudioRecorder.stop() {
             try? FileManager.default.removeItem(at: url)
         }
-        accumulatedMicSegments.removeAll()
+        micChunkCollector.cancelAll()
         fputs("[meeting] recording discarded\n", stderr)
     }
 
@@ -114,6 +165,7 @@ final class MeetingSession {
         isRecording = false
         let meetingStart = self.startTime ?? Date()
         let endTime = Date()
+        var micSegments: [SpeechSegment] = []
 
         // Stop VAD controller
         vadController?.stop()
@@ -133,7 +185,7 @@ final class MeetingSession {
             do {
                 let result = try await transcriptionCoordinator.transcribeMeetingChunk(at: lastMicURL, backend: backend, customWords: serializedCustomWords)
                 if !result.text.isEmpty {
-                    accumulatedMicSegments.append(SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text))
+                    micSegments.append(SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text))
                 }
             } catch {
                 fputs("[meeting] final mic chunk transcription failed: \(error)\n", stderr)
@@ -158,10 +210,18 @@ final class MeetingSession {
             systemResult = SpeechTranscriptionResult(text: "", segments: [])
         }
 
-        fputs("[meeting] \(accumulatedMicSegments.count) mic chunks transcribed during meeting\n", stderr)
+        micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
+        micSegments.sort { lhs, rhs in
+            if lhs.start == rhs.start {
+                return lhs.text < rhs.text
+            }
+            return lhs.start < rhs.start
+        }
+
+        fputs("[meeting] \(micSegments.count) mic chunks transcribed during meeting\n", stderr)
 
         let rawTranscript = TranscriptFormatter.merge(
-            micSegments: accumulatedMicSegments,
+            micSegments: micSegments,
             systemSegments: systemResult.segments,
             diarizationSegments: diarizationSegments,
             meetingStart: meetingStart
@@ -214,18 +274,27 @@ final class MeetingSession {
 
         fputs("[meeting] rotating chunk at offset=\(String(format: "%.0f", chunkOffset))s\n", stderr)
 
-        Task { [weak self] in
-            guard let self else { return }
+        let task = Task { [weak self] () -> SpeechSegment? in
+            defer {
+                try? FileManager.default.removeItem(at: chunkURL)
+            }
+            guard let self else { return nil }
             do {
+                if Task.isCancelled {
+                    return nil
+                }
                 let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: chunkURL, backend: backend, customWords: self.serializedCustomWords)
                 if !result.text.isEmpty {
-                    self.accumulatedMicSegments.append(SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text))
                     fputs("[meeting] chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                    return SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
                 }
             } catch {
                 fputs("[meeting] chunk transcription failed: \(error)\n", stderr)
             }
-            try? FileManager.default.removeItem(at: chunkURL)
+            return nil
+        }
+        if !micChunkCollector.add(task) {
+            task.cancel()
         }
     }
 }

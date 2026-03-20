@@ -17,7 +17,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         super.init()
     }
 
-    func start() throws {
+    func start() async throws {
         guard !isRecording else { return }
 
         // Create output WAV file
@@ -37,20 +37,36 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         totalBytesWritten = 0
         isRecording = true
 
-        // Start SCStream async
-        Task {
-            do {
-                try await startStream()
-                fputs("[system-audio] SCStream capture started\n", stderr)
-            } catch {
-                fputs("[system-audio] SCStream start failed: \(error)\n", stderr)
-                isRecording = false
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else { return }
+                    try await self.startStream()
+                    fputs("[system-audio] SCStream capture started\n", stderr)
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(5))
+                    throw NSError(domain: "SystemAudio", code: 3, userInfo: [
+                        NSLocalizedDescriptionKey: "Timed out while starting system audio capture",
+                    ])
+                }
+
+                guard let _ = try await group.next() else {
+                    throw NSError(domain: "SystemAudio", code: 4, userInfo: [
+                        NSLocalizedDescriptionKey: "System audio startup ended unexpectedly",
+                    ])
+                }
+                group.cancelAll()
             }
+        } catch {
+            fputs("[system-audio] SCStream start failed: \(error)\n", stderr)
+            cleanupFailedStart()
+            throw error
         }
     }
 
     func stop() -> URL? {
-        guard isRecording else { return nil }
+        guard isRecording || outputFile != nil || outputURL != nil else { return nil }
         isRecording = false
 
         if let stream {
@@ -71,9 +87,13 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
             outputFile.closeFile()
         }
         outputFile = nil
+        let writtenBytes = totalBytesWritten
+        let completedURL = outputURL
+        outputURL = nil
+        totalBytesWritten = 0
 
-        fputs("[system-audio] capture stopped, \(totalBytesWritten) bytes written\n", stderr)
-        return outputURL
+        fputs("[system-audio] capture stopped, \(writtenBytes) bytes written\n", stderr)
+        return completedURL
     }
 
     // MARK: - SCStream setup
@@ -195,5 +215,21 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         header.append(contentsOf: "data".utf8)
         header.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
         return header
+    }
+
+    private func cleanupFailedStart() {
+        isRecording = false
+        stream = nil
+
+        if let outputFile {
+            outputFile.closeFile()
+        }
+        outputFile = nil
+
+        if let outputURL {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+        outputURL = nil
+        totalBytesWritten = 0
     }
 }

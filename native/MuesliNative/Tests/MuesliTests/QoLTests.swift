@@ -121,3 +121,56 @@ struct DictationStateIdleTests {
         #expect(DictationState.idle != .transcribing)
     }
 }
+
+// MARK: - Meeting chunk collection
+
+@Suite("Meeting chunk collection")
+struct MeetingChunkCollectorTests {
+
+    @Test("collector waits for tasks, keeps completed segments, and sorts by start")
+    func collectorSortsSegments() async {
+        let collector = MeetingChunkCollector()
+
+        _ = collector.add(
+            Task {
+                try? await Task.sleep(for: .milliseconds(30))
+                return SpeechSegment(start: 30, end: 31, text: "later")
+            }
+        )
+        _ = collector.add(
+            Task {
+                try? await Task.sleep(for: .milliseconds(5))
+                return nil
+            }
+        )
+        _ = collector.add(
+            Task {
+                try? await Task.sleep(for: .milliseconds(10))
+                return SpeechSegment(start: 10, end: 11, text: "earlier")
+            }
+        )
+
+        let segments = await collector.closeAndDrainSortedSegments()
+
+        #expect(segments.map(\.text) == ["earlier", "later"])
+        #expect(segments.map(\.start) == [10, 30])
+    }
+
+    @Test("collector rejects tasks after closing")
+    func collectorRejectsLateTasks() async {
+        let collector = MeetingChunkCollector()
+        let initialTask = Task<SpeechSegment?, Never> {
+            SpeechSegment(start: 1, end: 2, text: "first")
+        }
+        #expect(collector.add(initialTask))
+
+        let initial = await collector.closeAndDrainSortedSegments()
+        #expect(initial.map(\.text) == ["first"])
+
+        let lateTask = Task<SpeechSegment?, Never> {
+            SpeechSegment(start: 3, end: 4, text: "late")
+        }
+        #expect(!collector.add(lateTask))
+        lateTask.cancel()
+    }
+}
