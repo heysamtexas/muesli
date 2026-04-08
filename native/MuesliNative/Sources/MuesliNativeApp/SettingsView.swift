@@ -40,6 +40,7 @@ struct SettingsView: View {
     @State private var chatGPTSignInError: String?
     @State private var isSigningInChatGPT = false
     @State private var pendingDataDestruction: PendingDataDestruction?
+    @State private var recordingColorInput: String = ""
 
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
@@ -242,6 +243,56 @@ struct SettingsView: View {
                     }
                 }
 
+                settingsSection("Appearance") {
+                    settingsRow("Menu bar icon") {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 4) {
+                                ForEach(MenuBarIconRenderer.options, id: \.id) { option in
+                                    let isSelected = appState.config.menuBarIcon == option.id
+                                    Button {
+                                        controller.updateConfig { $0.menuBarIcon = option.id }
+                                    } label: {
+                                        Group {
+                                            if option.id == "muesli",
+                                               let img = MenuBarIconRenderer.make(choice: "muesli") {
+                                                Image(nsImage: img)
+                                                    .resizable()
+                                                    .scaledToFit()
+                                                    .frame(width: 14, height: 14)
+                                            } else {
+                                                Image(systemName: option.id)
+                                                    .font(.system(size: 12))
+                                            }
+                                        }
+                                        .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                                        .frame(width: 26, height: 26)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 5)
+                                                .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 5)
+                                                .strokeBorder(Color.white.opacity(isSelected ? 0.3 : 0.08), lineWidth: 1)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(option.label)
+                                }
+                            }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Accent color") {
+                        glassTintPicker
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Play sound effects") {
+                        settingsSwitch(isOn: appState.config.soundEnabled) { newValue in
+                            controller.updateConfig { $0.soundEnabled = newValue }
+                        }
+                    }
+                }
+
                 settingsSection("Data") {
                     HStack(spacing: MuesliTheme.spacing12) {
                         actionButton("Clear dictation history", role: .destructive) {
@@ -281,6 +332,39 @@ struct SettingsView: View {
             }
         } message: {
             Text(pendingDataDestruction?.message ?? "")
+        }
+    }
+
+    private static let accentPresets: [(hex: String, name: String)] = [
+        ("2563eb", "Blue"),
+        ("ef4444", "Red"),
+        ("f59e0b", "Amber"),
+        ("10b981", "Green"),
+        ("8b5cf6", "Purple"),
+        ("ec4899", "Pink"),
+        ("1e1e2e", "Dark"),
+    ]
+
+    private var glassTintPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(Self.accentPresets, id: \.hex) { preset in
+                let isSelected = appState.config.recordingColorHex.lowercased() == preset.hex
+                Button {
+                    controller.updateConfig { $0.recordingColorHex = preset.hex }
+                } label: {
+                    Circle()
+                        .fill(Color(hex: preset.hex))
+                        .frame(width: 22, height: 22)
+                        .overlay(
+                            Circle().strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
+                        )
+                        .overlay(
+                            Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(preset.name)
+            }
         }
     }
 
@@ -506,3 +590,29 @@ struct PastableSecureField: NSViewRepresentable {
         }
     }
 }
+
+private extension Color {
+    init(hex: String) {
+        var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        h = h.hasPrefix("#") ? String(h.dropFirst()) : h
+        guard h.count == 6, let value = UInt64(h, radix: 16) else {
+            self = .black; return
+        }
+        self = Color(
+            red:   Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8)  & 0xFF) / 255,
+            blue:  Double( value        & 0xFF) / 255
+        )
+    }
+}
+
+private extension NSColor {
+    func toHexString() -> String? {
+        guard let rgb = usingColorSpace(.sRGB) else { return nil }
+        let r = Int((rgb.redComponent   * 255).rounded())
+        let g = Int((rgb.greenComponent * 255).rounded())
+        let b = Int((rgb.blueComponent  * 255).rounded())
+        return String(format: "%02x%02x%02x", r, g, b)
+    }
+}
+
