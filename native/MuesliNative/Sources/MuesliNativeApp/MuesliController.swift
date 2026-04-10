@@ -83,6 +83,11 @@ final class MuesliController: NSObject {
     private let meetingNotification = MeetingNotificationController()
 
     private let chatGPTAuth = ChatGPTAuthManager.shared
+    private let googleCalAuth = GoogleCalendarAuthManager.shared
+    private let googleCalClient = GoogleCalendarClient()
+    private var calendarRefreshTimer: Timer?
+    private var calendarNotificationTimer: Timer?
+    private var notifiedUpcomingEventIDs = Set<String>()
 
     private var statusBarController: StatusBarController?
     private var historyWindowController: RecentHistoryWindowController?
@@ -107,6 +112,8 @@ final class MuesliController: NSObject {
     private var isStartingMeetingRecording = false
     private var currentMeetingDetection: MeetingDetection?
     private var presentedMeetingDetection: MeetingDetection?
+    private var meetingEndTimer: Timer?
+    private var activeMeetingCalendarEndDate: Date?
 
     init(runtime: RuntimePaths, dictationStore: DictationStore? = nil) {
         let loadedConfig = configStore.load()
@@ -204,6 +211,7 @@ final class MuesliController: NSObject {
             self?.handleUpcomingMeeting(event)
         }
         calendarMonitor.start()
+        startCalendarRefreshTimer()
 
         micActivityMonitor.calendarEventProvider = { [weak self] in
             self?.calendarMonitor.currentOrNearbyEvent()
@@ -341,6 +349,9 @@ final class MuesliController: NSObject {
         appState.config = config
         appState.isMeetingRecording = isMeetingRecording()
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+        appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
+        appState.isGoogleCalendarVerified = googleCalAuth.isVerified
+        appState.isGoogleCalendarAuthenticated = googleCalAuth.isAuthenticated
     }
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
@@ -355,6 +366,7 @@ final class MuesliController: NSObject {
         }) ?? .openAI
         statusBarController?.refresh()
         statusBarController?.refreshIcon()
+        indicator.refreshIcon()
         historyWindowController?.updateBackendLabel()
         if config.showFloatingIndicator {
             indicator.ensureVisible(config: config)
@@ -474,6 +486,95 @@ final class MuesliController: NSObject {
             selectMeetingSummaryBackend(.openAI)
         }
         syncAppState()
+    }
+
+    // MARK: - Google Calendar
+
+    func signInWithGoogleCalendar() async -> String? {
+        do {
+            try await googleCalAuth.signIn()
+            syncAppState()
+            Task { await refreshUpcomingCalendarEvents() }
+            return nil
+        } catch {
+            fputs("[muesli-native] Google Calendar sign-in failed: \(error)\n", stderr)
+            return error.localizedDescription
+        }
+    }
+
+    func signOutGoogleCalendar() {
+        googleCalAuth.signOut()
+        googleCalClient.resetSync()
+        syncAppState()
+        Task { await refreshUpcomingCalendarEvents() }
+    }
+
+    func refreshUpcomingCalendarEvents() async {
+        var ekEvents = calendarMonitor.upcomingEvents(daysAhead: 7)
+
+        if googleCalAuth.isAuthenticated {
+            do {
+                let googleEvents = try await googleCalClient.fetchUpcomingEvents(daysAhead: 7)
+                ekEvents = GoogleCalendarClient.mergeEvents(eventKit: ekEvents, google: googleEvents)
+            } catch GoogleCalendarAuthError.notAuthenticated {
+                googleCalAuth.signOut()
+                googleCalClient.resetSync()
+                syncAppState()
+                fputs("[muesli-native] Google Calendar token invalid, signed out\n", stderr)
+            } catch GoogleCalendarAuthError.refreshFailed {
+                googleCalAuth.signOut()
+                googleCalClient.resetSync()
+                syncAppState()
+                fputs("[muesli-native] Google Calendar refresh token invalid, signed out\n", stderr)
+            } catch {
+                fputs("[muesli-native] Google Calendar fetch failed: \(error)\n", stderr)
+            }
+        }
+
+        appState.upcomingCalendarEvents = ekEvents
+        statusBarController?.updateMenuBarTitle()
+    }
+
+    func startCalendarRefreshTimer() {
+        calendarRefreshTimer?.invalidate()
+        calendarNotificationTimer?.invalidate()
+
+        // Single 60s timer: refresh events from Google Calendar + check for upcoming notifications
+        calendarRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.refreshUpcomingCalendarEvents()
+                self.checkUpcomingCalendarNotifications()
+            }
+        }
+        Task { await refreshUpcomingCalendarEvents() }
+    }
+
+    /// Check merged calendar events (EventKit + Google) for events starting within 5 minutes.
+    /// Fires the meeting notification for events not yet notified.
+    /// Check Google Calendar events for upcoming meetings (EventKit events are handled
+    /// by CalendarMonitor.checkMeetings separately). Lets handleUpcomingMeeting decide
+    /// between notification vs auto-record.
+    private func checkUpcomingCalendarNotifications() {
+        guard !isMeetingRecording(),
+              !isStartingMeetingRecording else { return }
+
+        let now = Date()
+        let fiveMinutesFromNow = now.addingTimeInterval(5 * 60)
+
+        for event in appState.upcomingCalendarEvents where event.source == .googleCalendar {
+            guard !event.isAllDay else { continue }
+            guard event.startDate > now && event.startDate <= fiveMinutesFromNow else { continue }
+            guard !notifiedUpcomingEventIDs.contains(event.id) else { continue }
+
+            notifiedUpcomingEventIDs.insert(event.id)
+            handleUpcomingMeeting(UpcomingMeetingEvent(
+                id: event.id,
+                title: event.title,
+                startDate: event.startDate
+            ))
+            return // Show one notification at a time
+        }
     }
 
     func addCustomWord(_ word: CustomWord) {
@@ -714,6 +815,38 @@ final class MuesliController: NSObject {
         syncAppState()
     }
 
+    func createMeetingFromCalendarEvent(_ event: UnifiedCalendarEvent, folderID: Int64?) {
+        // Check ALL folders for existing meeting with this calendar event ID
+        if let existing = try? dictationStore.meetingByCalendarEventID(event.id) {
+            if let folderID {
+                try? dictationStore.moveMeeting(id: existing.id, toFolder: folderID)
+            }
+            syncAppState()
+            fputs("[muesli-native] calendar event already exists as meeting \(existing.id), moved to folder\n", stderr)
+            return
+        }
+
+        do {
+            let meetingID = try dictationStore.insertMeeting(
+                title: event.title,
+                calendarEventID: event.id,
+                startTime: event.startDate,
+                endTime: event.endDate,
+                rawTranscript: "",
+                formattedNotes: "",
+                micAudioPath: nil,
+                systemAudioPath: nil
+            )
+            if let folderID {
+                try? dictationStore.moveMeeting(id: meetingID, toFolder: folderID)
+            }
+            syncAppState()
+            fputs("[muesli-native] created meeting from calendar event: \(event.title) (folder=\(folderID.map(String.init) ?? "none"))\n", stderr)
+        } catch {
+            fputs("[muesli-native] failed to create meeting from calendar event: \(error)\n", stderr)
+        }
+    }
+
     func moveMeeting(id: Int64, toFolder folderID: Int64?) {
         try? dictationStore.moveMeeting(id: id, toFolder: folderID)
         syncAppState()
@@ -832,6 +965,11 @@ final class MuesliController: NSObject {
         }
     }
 
+    @objc func startMeetingFromCalendarMenuItem(_ sender: NSMenuItem) {
+        guard let title = sender.representedObject as? String else { return }
+        startMeetingRecording(title: title)
+    }
+
     func startMeetingRecording(title: String = "Meeting") {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
         isStartingMeetingRecording = true
@@ -904,6 +1042,9 @@ final class MuesliController: NSObject {
 
     func stopMeetingRecording() {
         guard let activeMeetingSession else { return }
+        meetingEndTimer?.invalidate()
+        meetingEndTimer = nil
+        meetingNotification.close()
         indicator.setMeetingRecording(false, config: config)
         indicator.setTranscribingTitle("Transcribing", config: config)
         setState(.transcribing)
@@ -1441,8 +1582,72 @@ final class MuesliController: NSObject {
 
     private func handleUpcomingMeeting(_ event: UpcomingMeetingEvent) {
         fputs("[muesli-native] meeting soon: \(event.title)\n", stderr)
+
+        // Look up end date from unified calendar events
+        let calendarEndDate = appState.upcomingCalendarEvents
+            .first(where: { $0.id == event.id || $0.title == event.title })?.endDate
+
         if config.autoRecordMeetings, !isMeetingRecording() {
             startMeetingRecording(title: event.title)
+            scheduleMeetingEndNotification(endDate: calendarEndDate, title: event.title)
+            return
+        }
+
+        // Show notification panel for calendar events (if not auto-recording)
+        guard config.showMeetingDetectionNotification,
+              !isMeetingRecording(),
+              !isStartingMeetingRecording else { return }
+
+        let minutesUntil = Int(ceil(event.startDate.timeIntervalSinceNow / 60))
+        let timeLabel: String
+        if minutesUntil > 0 {
+            timeLabel = "starts in \(minutesUntil) min"
+        } else if minutesUntil == 0 {
+            timeLabel = "starting now"
+        } else {
+            timeLabel = "started \(abs(minutesUntil)) min ago"
+        }
+
+        meetingNotification.show(
+            title: "Upcoming meeting",
+            subtitle: "\(event.title) · \(timeLabel)",
+            onStartRecording: { [weak self] in
+                guard let self else { return }
+                self.startMeetingRecording(title: event.title)
+                self.scheduleMeetingEndNotification(endDate: calendarEndDate, title: event.title)
+            },
+            onDismiss: { [weak self] in
+                guard let self else { return }
+                self.micActivityMonitor.suppress()
+                self.micActivityMonitor.refreshState()
+            }
+        )
+    }
+
+    private func scheduleMeetingEndNotification(endDate: Date?, title: String) {
+        meetingEndTimer?.invalidate()
+        meetingEndTimer = nil
+
+        guard let endDate else { return }
+
+        let delay = endDate.timeIntervalSinceNow
+        guard delay > 0 else { return }
+
+        fputs("[muesli-native] meeting end notification scheduled in \(Int(delay))s for \"\(title)\"\n", stderr)
+        meetingEndTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self, self.isMeetingRecording() else { return }
+            DispatchQueue.main.async {
+                self.meetingNotification.show(
+                    title: "Meeting ended",
+                    subtitle: "\(title) · scheduled time is over",
+                    actionLabel: "Stop Recording",
+                    dismissAfter: 45,
+                    onStartRecording: { [weak self] in
+                        self?.stopMeetingRecording()
+                    },
+                    onDismiss: nil
+                )
+            }
         }
     }
 

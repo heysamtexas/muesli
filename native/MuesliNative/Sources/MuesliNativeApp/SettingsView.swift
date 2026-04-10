@@ -39,6 +39,8 @@ struct SettingsView: View {
 
     @State private var chatGPTSignInError: String?
     @State private var isSigningInChatGPT = false
+    @State private var googleCalSignInError: String?
+    @State private var isSigningInGoogleCal = false
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var recordingColorInput: String = ""
 
@@ -114,6 +116,7 @@ struct SettingsView: View {
                                             .foregroundStyle(.white)
                                             .lineLimit(1)
                                     }
+                                    .frame(maxWidth: .infinity)
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
                                     .background(MuesliTheme.success)
@@ -148,6 +151,7 @@ struct SettingsView: View {
                                                 .foregroundStyle(.white)
                                                 .lineLimit(1)
                                         }
+                                        .frame(maxWidth: .infinity)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 4)
                                         .background(MuesliTheme.accent)
@@ -243,6 +247,98 @@ struct SettingsView: View {
                     }
                 }
 
+                if appState.isGoogleCalendarAvailable {
+                    settingsSection("Calendar") {
+                        settingsRow("Google Calendar") {
+                            if appState.isGoogleCalendarAuthenticated {
+                                Button {
+                                    controller.signOutGoogleCalendar()
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "calendar")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.white)
+                                        Text("Connected · Disconnect")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(.white)
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(MuesliTheme.success)
+                                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                                }
+                                .buttonStyle(.plain)
+                            } else if isSigningInGoogleCal {
+                                HStack(spacing: 6) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Connecting...")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(MuesliTheme.textSecondary)
+                                }
+                            } else if !appState.isGoogleCalendarVerified {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "calendar.badge.plus")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.white.opacity(0.4))
+                                        Text("Connect Google Calendar")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.4))
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(MuesliTheme.textTertiary.opacity(0.3))
+                                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+
+                                    Text("Google OAuth verification pending")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(MuesliTheme.textTertiary)
+                                }
+                            } else {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Button {
+                                        isSigningInGoogleCal = true
+                                        googleCalSignInError = nil
+                                        Task {
+                                            let error = await controller.signInWithGoogleCalendar()
+                                            isSigningInGoogleCal = false
+                                            googleCalSignInError = error
+                                        }
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "calendar.badge.plus")
+                                                .font(.system(size: 10))
+                                                .foregroundStyle(.white)
+                                            Text("Connect Google Calendar")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 4)
+                                        .background(MuesliTheme.accent)
+                                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    if let googleCalSignInError {
+                                        Text(googleCalSignInError)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.red)
+                                            .lineLimit(2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 settingsSection("Appearance") {
                     settingsRow("Menu bar icon") {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -289,6 +385,12 @@ struct SettingsView: View {
                     settingsRow("Play sound effects") {
                         settingsSwitch(isOn: appState.config.soundEnabled) { newValue in
                             controller.updateConfig { $0.soundEnabled = newValue }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Show next meeting in menu bar") {
+                        settingsSwitch(isOn: appState.config.showNextMeetingInMenuBar) { newValue in
+                            controller.updateConfig { $0.showNextMeetingInMenuBar = newValue }
                         }
                     }
                 }
@@ -392,16 +494,22 @@ struct SettingsView: View {
         }
     }
 
-    /// Standardized row: label on left, control on right, consistent 36pt height
+    /// Standardized row: label on left, control on right.
+    /// Controls share a fixed-width column so they all right-align consistently.
     @ViewBuilder
     private func settingsRow(_ label: String, @ViewBuilder control: () -> some View) -> some View {
-        HStack {
+        HStack(alignment: .center) {
             Text(label)
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textPrimary)
-            Spacer()
-            control()
-                .frame(width: controlWidth, alignment: .trailing)
+                .layoutPriority(1)
+            Spacer(minLength: 20)
+            ZStack(alignment: .trailing) {
+                // Invisible spacer forces the ZStack to exactly controlWidth
+                Color.clear.frame(width: controlWidth, height: 1)
+                control()
+                    .frame(maxWidth: controlWidth)
+            }
         }
         .frame(minHeight: 32)
     }
@@ -410,62 +518,55 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func settingsSwitch(isOn: Bool, onChange: @escaping (Bool) -> Void) -> some View {
-        Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
-            .toggleStyle(.switch)
-            .tint(MuesliTheme.accent)
-            .labelsHidden()
+        HStack {
+            Spacer()
+            Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+        }
     }
 
     @ViewBuilder
     private func settingsMenu(selection: String, options: [String], onChange: @escaping (String) -> Void) -> some View {
-        Picker("", selection: Binding(get: { selection }, set: { onChange($0) })) {
-            ForEach(options, id: \.self) { Text($0).tag($0) }
-        }
-        .pickerStyle(.menu)
-        .frame(maxWidth: .infinity)
+        FixedWidthPopUp(selection: selection, options: options, onChange: onChange)
+            .frame(height: 24)
     }
 
     @ViewBuilder
     private func meetingTemplateMenu(selectionID: String, onChange: @escaping (String) -> Void) -> some View {
-        Picker(
-            "",
-            selection: Binding(
-                get: { selectionID },
-                set: { onChange($0) }
-            )
-        ) {
-            Text(MeetingTemplates.auto.title)
-                .tag(MeetingTemplates.autoID)
-            Section("Built-in Templates") {
-                ForEach(controller.builtInMeetingTemplates()) { template in
-                    Text(template.title)
-                        .tag(template.id)
-                }
+        let allItems: [(id: String, label: String)] = {
+            var items: [(String, String)] = [(MeetingTemplates.autoID, MeetingTemplates.auto.title)]
+            items += controller.builtInMeetingTemplates().map { ($0.id, $0.title) }
+            items += controller.customMeetingTemplates().map { ($0.id, $0.name) }
+            return items
+        }()
+        let selectedLabel = allItems.first(where: { $0.id == selectionID })?.label ?? "Auto"
+        FixedWidthPopUp(
+            selection: selectedLabel,
+            options: allItems.map(\.label),
+            onSelectIndex: { index in
+                guard index >= 0 && index < allItems.count else { return }
+                onChange(allItems[index].id)
             }
-
-            if !controller.customMeetingTemplates().isEmpty {
-                Section("Custom Templates") {
-                    ForEach(controller.customMeetingTemplates()) { template in
-                        Text(template.name)
-                            .tag(template.id)
-                    }
-                }
-            }
-        }
-        .pickerStyle(.menu)
-        .frame(maxWidth: .infinity)
+        )
+        .frame(height: 24)
     }
 
     @ViewBuilder
     private func settingsModelMenu(currentModel: String, presets: [SummaryModelPreset], onChange: @escaping (String) -> Void) -> some View {
-        Picker("", selection: Binding(
-            get: { currentModel.isEmpty ? (presets.first?.id ?? "") : currentModel },
-            set: { onChange($0 == presets.first?.id ? "" : $0) }
-        )) {
-            ForEach(presets, id: \.id) { Text($0.label).tag($0.id) }
-        }
-        .pickerStyle(.menu)
-        .frame(maxWidth: .infinity)
+        let effectiveModel = currentModel.isEmpty ? (presets.first?.id ?? "") : currentModel
+        let selectedLabel = presets.first(where: { $0.id == effectiveModel })?.label ?? presets.first?.label ?? ""
+        FixedWidthPopUp(
+            selection: selectedLabel,
+            options: presets.map(\.label),
+            onSelectIndex: { index in
+                guard index >= 0 && index < presets.count else { return }
+                let selectedId = presets[index].id
+                onChange(selectedId == presets.first?.id ? "" : selectedId)
+            }
+        )
+        .frame(height: 24)
     }
 
     @ViewBuilder
@@ -489,6 +590,7 @@ struct SettingsView: View {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, MuesliTheme.spacing16)
                 .padding(.vertical, MuesliTheme.spacing8)
                 .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
@@ -546,6 +648,63 @@ class EditableNSSecureTextField: NSSecureTextField {
             }
         }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// NSPopUpButton wrapper that respects width constraints (SwiftUI Picker with .menu style ignores them).
+struct FixedWidthPopUp: NSViewRepresentable {
+    let selection: String
+    let options: [String]
+    /// Reports the selected index, avoiding label collision issues.
+    let onSelectionIndex: (Int) -> Void
+
+    init(selection: String, options: [String], onChange: @escaping (String) -> Void) {
+        self.selection = selection
+        self.options = options
+        self.onSelectionIndex = { index in
+            guard index >= 0 && index < options.count else { return }
+            onChange(options[index])
+        }
+    }
+
+    init(selection: String, options: [String], onSelectIndex: @escaping (Int) -> Void) {
+        self.selection = selection
+        self.options = options
+        self.onSelectionIndex = onSelectIndex
+    }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        button.removeAllItems()
+        button.addItems(withTitles: options)
+        button.selectItem(withTitle: selection)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.selectionChanged(_:))
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        let currentTitles = button.itemTitles
+        if currentTitles != options {
+            button.removeAllItems()
+            button.addItems(withTitles: options)
+        }
+        if button.titleOfSelectedItem != selection {
+            button.selectItem(withTitle: selection)
+        }
+        context.coordinator.onSelectionIndex = onSelectionIndex
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSelectionIndex: onSelectionIndex) }
+
+    class Coordinator: NSObject {
+        var onSelectionIndex: (Int) -> Void
+        init(onSelectionIndex: @escaping (Int) -> Void) { self.onSelectionIndex = onSelectionIndex }
+        @objc func selectionChanged(_ sender: NSPopUpButton) {
+            onSelectionIndex(sender.indexOfSelectedItem)
+        }
     }
 }
 
