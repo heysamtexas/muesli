@@ -89,6 +89,8 @@ final class MuesliController: NSObject {
     private var calendarNotificationTimer: Timer?
     private var notifiedUpcomingEventIDs = Set<String>()
 
+    private var maraudersMapCountdown: MaraudersMapCountdownController?
+
     private var statusBarController: StatusBarController?
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
@@ -212,6 +214,7 @@ final class MuesliController: NSObject {
         }
         calendarMonitor.start()
         startCalendarRefreshTimer()
+        if config.maraudersMapUnlocked { startMaraudersMapMonitoring() }
 
         micActivityMonitor.calendarEventProvider = { [weak self] in
             self?.calendarMonitor.currentOrNearbyEvent()
@@ -352,6 +355,11 @@ final class MuesliController: NSObject {
         appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
         appState.isGoogleCalendarVerified = googleCalAuth.isVerified
         appState.isGoogleCalendarAuthenticated = googleCalAuth.isAuthenticated
+        // Keep appState in sync with persisted hidden event IDs
+        let persisted = Set(config.hiddenCalendarEventIDs)
+        if appState.hiddenCalendarEventIDs != persisted {
+            appState.hiddenCalendarEventIDs = persisted
+        }
     }
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
@@ -532,6 +540,15 @@ final class MuesliController: NSObject {
         }
 
         appState.upcomingCalendarEvents = ekEvents
+
+        // Prune hidden IDs for events that no longer exist in the calendar
+        let currentEventIDs = Set(ekEvents.map(\.id))
+        let staleIDs = appState.hiddenCalendarEventIDs.subtracting(currentEventIDs)
+        if !staleIDs.isEmpty {
+            appState.hiddenCalendarEventIDs.subtract(staleIDs)
+            updateConfig { $0.hiddenCalendarEventIDs = self.appState.hiddenCalendarEventIDs.sorted() }
+        }
+
         statusBarController?.updateMenuBarTitle()
     }
 
@@ -813,6 +830,12 @@ final class MuesliController: NSObject {
             appState.selectedFolderID = nil
         }
         syncAppState()
+    }
+
+    func hideCalendarEvent(_ eventID: String) {
+        appState.hiddenCalendarEventIDs.insert(eventID)
+        updateConfig { $0.hiddenCalendarEventIDs = self.appState.hiddenCalendarEventIDs.sorted() }
+        statusBarController?.refresh()
     }
 
     func createMeetingFromCalendarEvent(_ event: UnifiedCalendarEvent, folderID: Int64?) {
@@ -1500,6 +1523,8 @@ final class MuesliController: NSObject {
             let cleaned = FillerWordFilter.apply(finalText)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
+            if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
+
             if !cleaned.isEmpty {
                 try? dictationStore.insertDictation(
                     text: cleaned,
@@ -1546,6 +1571,9 @@ final class MuesliController: NSObject {
                     customWords: self.serializedCustomWords()
                 )
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !self.config.maraudersMapUnlocked {
+                    await MainActor.run { self.checkMaraudersMapActivation(text) }
+                }
                 guard !text.isEmpty else {
                     await MainActor.run {
                         self.setState(.idle)
@@ -1577,6 +1605,67 @@ final class MuesliController: NSObject {
                     self.setState(.idle)
                 }
             }
+        }
+    }
+
+    // MARK: - Marauder's Map
+
+    private func checkMaraudersMapActivation(_ text: String) {
+        guard !config.maraudersMapUnlocked else { return }
+        guard MaraudersMapDetector.containsActivationPhrase(text) else { return }
+
+        fputs("[muesli-native] Marauder's Map unlocked!\n", stderr)
+        updateConfig { $0.maraudersMapUnlocked = true }
+        SoundController.playMaraudersMapUnlock()
+        indicator.showWarning("Mischief Managed", icon: "\u{26A1}", duration: 3.0)
+        startMaraudersMapMonitoring()
+    }
+
+    private func startMaraudersMapMonitoring() {
+        guard config.maraudersMapUnlocked else { return }
+
+        let countdown = MaraudersMapCountdownController()
+        self.maraudersMapCountdown = countdown
+
+        countdown.startMonitoring(
+            eventProvider: { [weak self] in
+                guard let self else { return nil }
+                let now = Date()
+                let hidden = self.appState.hiddenCalendarEventIDs
+                guard let event = self.appState.upcomingCalendarEvents
+                    .filter({ !$0.isAllDay && $0.startDate > now && !hidden.contains($0.id) })
+                    .min(by: { $0.startDate < $1.startDate }) else { return nil }
+                return (id: event.id, title: event.title, startDate: event.startDate)
+            },
+            audioClipID: config.maraudersMapAudioClip,
+            customAudioPath: config.maraudersMapCustomAudioPath,
+            onStatusBarUpdate: { [weak self] text in
+                self?.statusBarController?.setCountdownOverride(text)
+            },
+            onCountdownFinished: { [weak self] title in
+                guard let self, !self.isMeetingRecording() else { return }
+                self.meetingNotification.show(
+                    title: "Meeting starting now",
+                    subtitle: title,
+                    onStartRecording: { [weak self] in
+                        self?.startMeetingRecording(title: title)
+                    }
+                )
+            }
+        )
+    }
+
+    func updateMaraudersMapAudioClip() {
+        maraudersMapCountdown?.updateAudioClip(config.maraudersMapAudioClip, customPath: config.maraudersMapCustomAudioPath)
+    }
+
+    func resetMaraudersMap() {
+        maraudersMapCountdown?.stopMonitoring()
+        maraudersMapCountdown = nil
+        updateConfig {
+            $0.maraudersMapUnlocked = false
+            $0.maraudersMapAudioClip = "bbc_world_news"
+            $0.maraudersMapCustomAudioPath = nil
         }
     }
 

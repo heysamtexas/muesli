@@ -281,6 +281,10 @@ struct AppConfig: Codable {
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
     var menuBarIcon: String = "muesli"
     var showNextMeetingInMenuBar: Bool = true
+    var maraudersMapUnlocked: Bool = false
+    var maraudersMapAudioClip: String = "bbc_world_news"
+    var maraudersMapCustomAudioPath: String?
+    var hiddenCalendarEventIDs: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -316,6 +320,10 @@ struct AppConfig: Codable {
         case recordingColorHex = "recording_color_hex"
         case menuBarIcon = "menu_bar_icon"
         case showNextMeetingInMenuBar = "show_next_meeting_in_menu_bar"
+        case maraudersMapUnlocked = "marauders_map_unlocked"
+        case maraudersMapAudioClip = "marauders_map_audio_clip"
+        case maraudersMapCustomAudioPath = "marauders_map_custom_audio_path"
+        case hiddenCalendarEventIDs = "hidden_calendar_event_ids"
     }
 
     init() {}
@@ -356,6 +364,10 @@ struct AppConfig: Codable {
         recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
         menuBarIcon = (try? c.decode(String.self, forKey: .menuBarIcon)) ?? defaults.menuBarIcon
         showNextMeetingInMenuBar = (try? c.decode(Bool.self, forKey: .showNextMeetingInMenuBar)) ?? defaults.showNextMeetingInMenuBar
+        maraudersMapUnlocked = (try? c.decode(Bool.self, forKey: .maraudersMapUnlocked)) ?? defaults.maraudersMapUnlocked
+        maraudersMapAudioClip = (try? c.decode(String.self, forKey: .maraudersMapAudioClip)) ?? defaults.maraudersMapAudioClip
+        maraudersMapCustomAudioPath = try? c.decode(String.self, forKey: .maraudersMapCustomAudioPath)
+        hiddenCalendarEventIDs = (try? c.decode([String].self, forKey: .hiddenCalendarEventIDs)) ?? defaults.hiddenCalendarEventIDs
     }
 }
 

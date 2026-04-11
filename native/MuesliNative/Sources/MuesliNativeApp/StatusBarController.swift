@@ -9,6 +9,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private let statusLabel = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
+    private var countdownOverride: String?
 
     init(controller: MuesliController, runtime: RuntimePaths) {
         self.controller = controller
@@ -32,20 +33,35 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         rebuildMenu()
     }
 
+    func setCountdownOverride(_ text: String?) {
+        countdownOverride = text
+        if let text {
+            statusItem.button?.title = text
+        } else {
+            updateMenuBarTitle()
+        }
+    }
+
     func refreshIcon() {
         statusItem.button?.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
         updateMenuBarTitle()
     }
 
     func updateMenuBarTitle() {
+        if let countdownOverride {
+            statusItem.button?.title = countdownOverride
+            return
+        }
         guard controller.config.showNextMeetingInMenuBar else {
             statusItem.button?.title = ""
             return
         }
 
         let now = Date()
+        let hidden = controller.appState.hiddenCalendarEventIDs
+        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
         let nextEvent = controller.appState.upcomingCalendarEvents
-            .filter { !$0.isAllDay && $0.startDate > now }
+            .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
             .first
 
         if let event = nextEvent {
@@ -78,7 +94,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
 
         // Upcoming calendar events
-        let upcomingEvents = controller.appState.upcomingCalendarEvents.filter { !$0.isAllDay }
+        let hidden = controller.appState.hiddenCalendarEventIDs
+        let upcomingEvents = controller.appState.upcomingCalendarEvents.filter { !$0.isAllDay && !hidden.contains($0.id) }
         if !upcomingEvents.isEmpty {
             addUpcomingEventsSection(upcomingEvents)
             menu.addItem(.separator())
