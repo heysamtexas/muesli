@@ -86,7 +86,7 @@ final class MeetingSession {
     private let runtime: RuntimePaths
     private let config: AppConfig
     private let transcriptionCoordinator: TranscriptionCoordinator
-    private let systemAudioRecorder = SystemAudioRecorder()
+    private let systemAudioRecorder: SystemAudioCapturing
     private let fullSessionMicRecorder = MicrophoneRecorder()
     private let neuralAec = MeetingNeuralAec()
 
@@ -131,6 +131,11 @@ final class MeetingSession {
         self.runtime = runtime
         self.config = config
         self.transcriptionCoordinator = transcriptionCoordinator
+        if config.useCoreAudioTap {
+            self.systemAudioRecorder = CoreAudioSystemRecorder()
+        } else {
+            self.systemAudioRecorder = SystemAudioRecorder()
+        }
     }
 
     func start() async throws {
@@ -189,7 +194,8 @@ final class MeetingSession {
             fputs("[meeting] VAD not available, using max-duration fallback only\n", stderr)
         }
         if config.enableScreenContext {
-            await screenContextCollector.startPeriodicCapture()
+            // OCR screenshots are safe when using CoreAudio tap (no SCStream conflict)
+            await screenContextCollector.startPeriodicCapture(useOCR: config.useCoreAudioTap)
         }
     }
 

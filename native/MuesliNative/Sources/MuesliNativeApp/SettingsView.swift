@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import MuesliCore
 
@@ -81,6 +82,8 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                permissionsSection
 
                 settingsSection("Transcription") {
                     settingsRow("Backend") {
@@ -639,6 +642,79 @@ struct SettingsView: View {
         } catch {
             fputs("[muesli-native] Failed to import custom audio: \(error)\n", stderr)
         }
+    }
+
+    // MARK: - Permissions
+
+    private var permissionsSection: some View {
+        settingsSection("Permissions") {
+            permissionStatusRow(
+                "Microphone",
+                granted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
+                pane: "Privacy_Microphone"
+            )
+            Divider().background(MuesliTheme.surfaceBorder)
+            permissionStatusRow(
+                "Accessibility",
+                granted: AXIsProcessTrusted(),
+                action: {
+                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+                    AXIsProcessTrustedWithOptions(opts)
+                },
+                pane: "Privacy_Accessibility"
+            )
+            Divider().background(MuesliTheme.surfaceBorder)
+            permissionStatusRow(
+                "Input Monitoring",
+                granted: CGPreflightListenEventAccess(),
+                action: { CGRequestListenEventAccess() },
+                pane: "Privacy_ListenEvent"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func permissionStatusRow(_ name: String, granted: Bool, action: @escaping () -> Void, pane: String) -> some View {
+        HStack {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(granted ? MuesliTheme.success : MuesliTheme.recording)
+                    .frame(width: 8, height: 8)
+                Text(name)
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+            }
+            Spacer()
+            if granted {
+                Text("Granted")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.success)
+            } else {
+                Button("Grant") {
+                    action()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(MuesliTheme.accentSubtle)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            Button {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Open in System Settings")
+        }
+        .frame(minHeight: 32)
     }
 
     // MARK: - Layout Primitives

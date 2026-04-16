@@ -262,20 +262,31 @@ actor MeetingScreenContextCollector {
     private var snapshots: [Snapshot] = []
     private var captureTask: Task<Void, Never>?
 
-    func startPeriodicCapture(interval: TimeInterval = 60) {
+    /// Start periodic screen context capture.
+    /// - Parameter useOCR: When `true`, uses screenshot + OCR (richer context).
+    ///   Safe only when CoreAudio tap is active (no SCStream conflict).
+    ///   When `false`, uses Accessibility API only (lightweight, no screenshots).
+    func startPeriodicCapture(interval: TimeInterval = 60, useOCR: Bool = false) {
         captureTask?.cancel()
         captureTask = Task {
             while !Task.isCancelled {
-                let ctx = DictationContextCapture.capture()
-                let text = DictationContextCapture.formatForPrompt(ctx)
-                if !text.isEmpty {
+                if useOCR, let screenCtx = await ScreenContextCapture.captureOnce() {
                     snapshots.append(Snapshot(
-                        timestamp: Date(),
-                        appName: ctx.appName,
-                        contextText: String(text.prefix(1000))
+                        timestamp: screenCtx.capturedAt,
+                        appName: screenCtx.appName,
+                        contextText: String(screenCtx.ocrText.prefix(1000))
                     ))
+                } else {
+                    let ctx = DictationContextCapture.capture()
+                    let text = DictationContextCapture.formatForPrompt(ctx)
+                    if !text.isEmpty {
+                        snapshots.append(Snapshot(
+                            timestamp: Date(),
+                            appName: ctx.appName,
+                            contextText: String(text.prefix(1000))
+                        ))
+                    }
                 }
-                // Cancellation wakes the sleep; Task.isCancelled gates the next iteration
                 try? await Task.sleep(for: .seconds(interval))
             }
         }

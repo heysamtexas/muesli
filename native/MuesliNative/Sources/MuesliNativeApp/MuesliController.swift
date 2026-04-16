@@ -145,6 +145,9 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
 
+        // Clean up phantom aggregate devices left by a previous crash
+        CoreAudioSystemRecorder.cleanupStaleDevices()
+
         // Clean up leftover audio temp files from previous sessions.
         cleanupTemporaryDirectory(
             named: "muesli-system-audio",
@@ -256,8 +259,10 @@ final class MuesliController: NSObject {
 
         if !config.hasCompletedOnboarding {
             if let progress = OnboardingProgress.load() {
-                // Only start hotkey monitor when resuming at/past the dictation test step
-                if progress.currentStep >= OnboardingView.dictationTestStep {
+                // Start hotkey monitor when resuming past the hotkey config step (step 2).
+                // The hotkey is configured at step 2, permissions at step 3 (which may
+                // restart the app via Screen Recording grant), dictation test at step 4.
+                if progress.currentStep > 2 {
                     hotkeyMonitor.targetKeyCode = progress.hotkeyKeyCode
                     hotkeyMonitor.start()
                 }
@@ -289,6 +294,7 @@ final class MuesliController: NSObject {
             await transcriptionCoordinator.shutdown()
         }
         indicator.close()
+        CoreAudioSystemRecorder.cleanupStaleDevices()
     }
 
     func recentDictations() -> [DictationRecord] {
@@ -753,8 +759,12 @@ final class MuesliController: NSObject {
             } catch {
                 fputs("[muesli-native] relaunch failed: \(error)\n", stderr)
             }
+            // Use exit(0) instead of NSApp.terminate(nil) — terminate can be
+            // blocked by SwiftUI animation contexts or applicationShouldTerminate,
+            // leaving the old process alive with stale floating indicator and
+            // status bar icon.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                NSApp.terminate(nil)
+                exit(0)
             }
         }
     }
@@ -1211,6 +1221,25 @@ final class MuesliController: NSObject {
                 self.statusBarController?.setStatus("Idle")
                 self.statusBarController?.refresh()
                 self.setState(.idle)
+
+                let isSystemAudioError = error.localizedDescription.contains("tap") ||
+                    error.localizedDescription.contains("Aggregate") ||
+                    error.localizedDescription.contains("AUHAL")
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                if isSystemAudioError {
+                    alert.messageText = "System audio capture failed"
+                    alert.informativeText = "Could not start system audio recording. Open System Settings > Privacy & Security > Screen & System Audio Recording and enable \(AppIdentity.displayName) under \"System Audio Recording Only\".\n\nError: \(error.localizedDescription)"
+                    alert.addButton(withTitle: "Open System Settings")
+                    alert.addButton(withTitle: "OK")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        CoreAudioSystemRecorder.openSystemAudioSettings()
+                    }
+                } else {
+                    alert.messageText = "Meeting failed to start"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
             }
             self.isStartingMeetingRecording = false
             self.updateMeetingNotificationVisibility()
