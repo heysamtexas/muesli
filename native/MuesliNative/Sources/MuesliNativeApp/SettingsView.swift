@@ -126,6 +126,18 @@ struct SettingsView: View {
                     }
                 }
 
+                settingsSection("Context") {
+                    settingsRow("Screen context") {
+                        settingsSwitch(isOn: appState.config.enableScreenContext) { newValue in
+                            controller.updateConfig { $0.enableScreenContext = newValue }
+                        }
+                    }
+                    Text("Reads app name and nearby text via the Accessibility API to improve dictation formatting and meeting summaries. No screenshots. All processing stays on-device.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, MuesliTheme.spacing16)
+                }
+
                 settingsSection("Meetings") {
                     settingsRow("Summary backend") {
                         settingsMenu(
