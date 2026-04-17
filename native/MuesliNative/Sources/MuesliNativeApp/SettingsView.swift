@@ -47,6 +47,13 @@ struct SettingsView: View {
     @State private var isPreviewingClip = false
     @State private var availableBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
+    @State private var permissionPollTimer: Timer?
+    @State private var micGranted = false
+    @State private var accessibilityGranted = false
+    @State private var inputMonitoringGranted = false
+    @State private var screenRecordingGranted = false
+    @State private var systemAudioGranted = false
+    @State private var isCheckingSystemAudioPermission = false
 
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
@@ -533,10 +540,15 @@ struct SettingsView: View {
         .background(MuesliTheme.backgroundBase)
         .onAppear {
             refreshDownloadedModelOptions()
+            startPermissionPolling()
+        }
+        .onDisappear {
+            stopPermissionPolling()
         }
         .onChange(of: appState.selectedTab) { _, tab in
             if tab == .settings {
                 refreshDownloadedModelOptions()
+                refreshPermissionStatuses()
             }
         }
         .onChange(of: appState.selectedBackend) { _, _ in
@@ -650,14 +662,14 @@ struct SettingsView: View {
         settingsSection("Permissions") {
             permissionStatusRow(
                 "Microphone",
-                granted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                granted: micGranted,
                 action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
                 pane: "Privacy_Microphone"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Accessibility",
-                granted: AXIsProcessTrusted(),
+                granted: accessibilityGranted,
                 action: {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
                     AXIsProcessTrustedWithOptions(opts)
@@ -667,7 +679,7 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Input Monitoring",
-                granted: CGPreflightListenEventAccess(),
+                granted: inputMonitoringGranted,
                 action: {
                     if !CGRequestListenEventAccess() {
                         openPrivacyPane("Privacy_ListenEvent")
@@ -678,10 +690,21 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Screen Recording",
-                granted: CGPreflightScreenCaptureAccess(),
+                granted: screenRecordingGranted,
                 action: { CGRequestScreenCaptureAccess() },
                 pane: "Privacy_ScreenCapture"
             )
+            if appState.config.useCoreAudioTap {
+                Divider().background(MuesliTheme.surfaceBorder)
+                permissionStatusRow(
+                    "System Audio",
+                    granted: systemAudioGranted,
+                    action: {
+                        Task { await CoreAudioSystemRecorder.requestSystemAudioAccess() }
+                    },
+                    pane: "Privacy_ScreenCapture"
+                )
+            }
         }
     }
 
@@ -729,6 +752,44 @@ struct SettingsView: View {
     private func openPrivacyPane(_ pane: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func startPermissionPolling() {
+        refreshPermissionStatuses()
+        permissionPollTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            refreshPermissionStatuses()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        permissionPollTimer = timer
+    }
+
+    private func stopPermissionPolling() {
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
+    }
+
+    private func refreshPermissionStatuses() {
+        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        accessibilityGranted = AXIsProcessTrusted()
+        inputMonitoringGranted = CGPreflightListenEventAccess()
+        screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        refreshSystemAudioPermissionIfNeeded()
+    }
+
+    private func refreshSystemAudioPermissionIfNeeded() {
+        guard appState.config.useCoreAudioTap, !isCheckingSystemAudioPermission else { return }
+        isCheckingSystemAudioPermission = true
+
+        Task {
+            let granted = await Task.detached(priority: .utility) {
+                CoreAudioSystemRecorder.checkSystemAudioPermission()
+            }.value
+            await MainActor.run {
+                self.systemAudioGranted = granted
+                self.isCheckingSystemAudioPermission = false
+            }
         }
     }
 
