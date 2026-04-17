@@ -80,13 +80,15 @@ private enum MeetingTranscriptRecoveryResult {
 }
 
 final class MeetingSession {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
+
     private let title: String
     private let calendarEventID: String?
     private let backend: BackendOption
     private let runtime: RuntimePaths
     private let config: AppConfig
     private let transcriptionCoordinator: TranscriptionCoordinator
-    private let systemAudioRecorder = SystemAudioRecorder()
+    private let systemAudioRecorder: SystemAudioCapturing
     private let fullSessionMicRecorder = MicrophoneRecorder()
     private let neuralAec = MeetingNeuralAec()
 
@@ -131,6 +133,11 @@ final class MeetingSession {
         self.runtime = runtime
         self.config = config
         self.transcriptionCoordinator = transcriptionCoordinator
+        if config.useCoreAudioTap {
+            self.systemAudioRecorder = CoreAudioSystemRecorder()
+        } else {
+            self.systemAudioRecorder = SystemAudioRecorder()
+        }
     }
 
     func start() async throws {
@@ -189,7 +196,8 @@ final class MeetingSession {
             fputs("[meeting] VAD not available, using max-duration fallback only\n", stderr)
         }
         if config.enableScreenContext {
-            await screenContextCollector.startPeriodicCapture()
+            // OCR screenshots are safe when using CoreAudio tap (no SCStream conflict)
+            await screenContextCollector.startPeriodicCapture(useOCR: config.useCoreAudioTap)
         }
     }
 
@@ -456,6 +464,8 @@ final class MeetingSession {
             customTemplates: config.customMeetingTemplates
         )
         let visualContext = await screenContextCollector.stopAndDrain()
+        Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
+        fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
         let formattedNotes = await MeetingSummaryClient.summarize(
             transcript: rawTranscript,

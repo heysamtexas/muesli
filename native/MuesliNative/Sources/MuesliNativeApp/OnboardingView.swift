@@ -21,7 +21,11 @@ struct OnboardingView: View {
     @State private var accessibilityGranted = false
     @State private var inputMonitoringGranted = false
     @State private var screenRecordingGranted = false
+    @State private var systemAudioGranted = false
     @State private var permissionPollTimer: Timer?
+    @State private var isCheckingSystemAudioPermission = false
+    @State private var grantingPermissionName: String?
+    @State private var recentlyGrantedPermissionName: String?
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -52,14 +56,36 @@ struct OnboardingView: View {
         initialStep: Int = 0,
         initialUserName: String = "",
         initialBackend: BackendOption = .parakeetMultilingual,
-        initialHotkey: HotkeyConfig = .default
+        initialHotkey: HotkeyConfig = .default,
+        initialSystemAudioRequested: Bool = false
     ) {
         self.controller = controller
         self.appState = appState
-        _currentStep = State(initialValue: initialStep)
+        // Pre-populate permission states so resumed onboarding reflects grants
+        // that happened before the deliberate restart.
+        let initialMicGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let initialAccessibilityGranted = AXIsProcessTrusted()
+        let initialInputMonitoringGranted = CGPreflightListenEventAccess()
+        let initialScreenRecordingGranted = CGPreflightScreenCaptureAccess()
+        let initialSystemAudioGranted = initialSystemAudioRequested || CoreAudioSystemRecorder.checkSystemAudioPermission()
+        let initialPermissionsGranted = initialMicGranted
+            && initialAccessibilityGranted
+            && initialInputMonitoringGranted
+            && initialScreenRecordingGranted
+            && (!appState.config.useCoreAudioTap || initialSystemAudioGranted)
+        let effectiveInitialStep = initialStep >= Self.dictationTestStep && !initialPermissionsGranted
+            ? 3
+            : initialStep
+
+        _currentStep = State(initialValue: effectiveInitialStep)
         _userName = State(initialValue: initialUserName)
         _selectedBackend = State(initialValue: initialBackend)
         _selectedHotkey = State(initialValue: initialHotkey)
+        _micGranted = State(initialValue: initialMicGranted)
+        _accessibilityGranted = State(initialValue: initialAccessibilityGranted)
+        _inputMonitoringGranted = State(initialValue: initialInputMonitoringGranted)
+        _screenRecordingGranted = State(initialValue: initialScreenRecordingGranted)
+        _systemAudioGranted = State(initialValue: initialSystemAudioGranted)
     }
 
     var body: some View {
@@ -68,8 +94,8 @@ struct OnboardingView: View {
                 switch currentStep {
                 case 0: welcomeStep
                 case 1: modelStep
-                case 2: permissionsStep
-                case 3: hotkeyStep
+                case 2: hotkeyStep
+                case 3: permissionsStep
                 case 4: dictationTestStep
                 case 5: meetingSummaryStep
                 case 6: googleCalendarStep
@@ -120,8 +146,14 @@ struct OnboardingView: View {
         }
         .background(MuesliTheme.backgroundBase)
         .preferredColorScheme(.dark)
+        .onAppear {
+            saveProgress(atStep: currentStep)
+        }
         .onChange(of: currentStep) { _, step in
-            if step > 0 { saveProgress() }
+            saveProgress(atStep: step)
+        }
+        .onChange(of: userName) { _, _ in
+            saveProgress(atStep: currentStep)
         }
     }
 
@@ -143,7 +175,7 @@ struct OnboardingView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { currentStep = 3 }
             }
         case 3:
-            onboardingButton("Continue", enabled: true) {
+            onboardingButton("Continue", enabled: allPermissionsGranted) {
                 saveProgressAndRestart()
             }
         case 4:
@@ -228,7 +260,11 @@ struct OnboardingView: View {
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
 
-                OnboardingTextField(text: $userName, placeholder: "Enter your name")
+                OnboardingTextField(text: $userName, placeholder: "Enter your name", onSubmit: {
+                    if !userName.trimmingCharacters(in: .whitespaces).isEmpty {
+                        withAnimation(.easeInOut(duration: 0.2)) { currentStep = 1 }
+                    }
+                })
                     .frame(width: 280, height: 32)
             }
 
@@ -336,94 +372,146 @@ struct OnboardingView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Step 3: Permissions
+    // MARK: - Step 3: Permissions (sequential, one at a time)
+
+    /// The ordered list of permissions to grant during onboarding.
+    /// Screen Recording is handled specially: granting it may terminate the app,
+    /// so that grant path saves progress directly to the post-restart dictation
+    /// test. If macOS does not terminate, the normal Continue button performs
+    /// the single deliberate restart.
+    private var permissionSteps: [(icon: String, name: String, description: String, granted: Bool, action: () -> Void)] {
+        var steps: [(String, String, String, Bool, () -> Void)] = [
+            ("mic.fill", "Microphone", "Record audio for dictation and meetings", micGranted, {
+                AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            }),
+            ("hand.raised.fill", "Accessibility", "Paste transcribed text into other apps", accessibilityGranted, {
+                let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+                AXIsProcessTrustedWithOptions(opts)
+            }),
+            ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk dictation", inputMonitoringGranted, {
+                if !CGRequestListenEventAccess() {
+                    self.openSystemSettings("Privacy_ListenEvent")
+                }
+            }),
+        ]
+        if appState.config.useCoreAudioTap {
+            steps.append(("speaker.wave.2.fill", "System Audio", "Capture meeting audio from other participants", systemAudioGranted, {
+                Task {
+                    await CoreAudioSystemRecorder.requestSystemAudioAccess()
+                    await resolveSystemAudioPermissionAfterRequest()
+                }
+            }))
+            steps.append(("rectangle.dashed.badge.record", "Screen Recording", "Capture screen content for richer meeting context", screenRecordingGranted, {
+                requestScreenRecordingDuringOnboarding()
+            }))
+        } else {
+            steps.append(("rectangle.dashed.badge.record", "Screen & System Audio", "Capture system audio and screen content during meetings", screenRecordingGranted, {
+                requestScreenRecordingDuringOnboarding()
+            }))
+        }
+        return steps
+    }
+
+    /// Index of the current permission being requested.
+    private var currentPermissionIndex: Int {
+        for (i, step) in permissionSteps.enumerated() {
+            if !step.granted { return i }
+        }
+        return permissionSteps.count
+    }
 
     private var permissionsStep: some View {
-        VStack(spacing: MuesliTheme.spacing24) {
+        let steps = permissionSteps
+        let idx = currentPermissionIndex
+        let total = steps.count
+        let confirmationIndex = recentlyGrantedPermissionName.flatMap { grantedName in
+            steps.firstIndex { $0.name == grantedName }
+        }
+        let displayIndex = confirmationIndex ?? idx
+
+        return VStack(spacing: MuesliTheme.spacing24) {
             Spacer()
 
-            VStack(spacing: MuesliTheme.spacing8) {
-                Text("System Permissions")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
+            if displayIndex < total {
+                let step = steps[displayIndex]
+                let isConfirmingGrant = recentlyGrantedPermissionName == step.name
 
-                Text("Muesli needs a few macOS permissions to work properly. You can grant these now or later.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
+                VStack(spacing: MuesliTheme.spacing8) {
+                    Text("Permission \(displayIndex + 1) of \(total)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .textCase(.uppercase)
 
-            VStack(spacing: 0) {
-                permissionRow(
-                    icon: "mic.fill",
-                    name: "Microphone",
-                    description: "Record audio for dictation and meetings",
-                    granted: micGranted,
-                    action: {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in }
-                    }
-                )
-                Divider().background(MuesliTheme.surfaceBorder)
-                permissionRow(
-                    icon: "hand.raised.fill",
-                    name: "Accessibility",
-                    description: "Paste transcribed text into other apps",
-                    granted: accessibilityGranted,
-                    action: {
-                        // Triggers system dialog that auto-adds the app to the list
-                        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                        AXIsProcessTrustedWithOptions(opts)
-                    }
-                )
-                Divider().background(MuesliTheme.surfaceBorder)
-                permissionRow(
-                    icon: "keyboard.fill",
-                    name: "Input Monitoring",
-                    description: "Detect hotkey for push-to-talk dictation",
-                    granted: inputMonitoringGranted,
-                    action: {
-                        CGRequestListenEventAccess()
-                    }
-                )
-                Divider().background(MuesliTheme.surfaceBorder)
-                permissionRow(
-                    icon: "rectangle.dashed.badge.record",
-                    name: "Screen Recording",
-                    description: "Capture system audio during meetings",
-                    granted: screenRecordingGranted,
-                    action: {
-                        CGRequestScreenCaptureAccess()
-                    }
-                )
-            }
-            .background(MuesliTheme.backgroundRaised)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
-            .frame(width: 460)
+                    Text(step.name)
+                        .font(MuesliTheme.title1())
+                        .foregroundStyle(MuesliTheme.textPrimary)
 
-            VStack(spacing: 4) {
-                Text("A macOS prompt will appear for each permission. Just click Allow.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .multilineTextAlignment(.center)
+                    Text(step.description)
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
 
-                if !allPermissionsGranted {
-                    Button {
-                        let pane: String
-                        if !micGranted { pane = "Privacy_Microphone" }
-                        else if !accessibilityGranted { pane = "Privacy_Accessibility" }
-                        else if !inputMonitoringGranted { pane = "Privacy_ListenEvent" }
-                        else { pane = "Privacy_ScreenCapture" }
-                        openSystemSettings(pane)
-                    } label: {
-                        Text("Not seeing a prompt? Open System Settings manually")
-                            .font(.system(size: 11))
-                            .foregroundStyle(MuesliTheme.accent)
+                Image(systemName: step.icon)
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundStyle(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
+                    .frame(height: 64)
+
+                Button {
+                    grantingPermissionName = step.name
+                    recentlyGrantedPermissionName = nil
+                    saveProgress(atStep: currentStep)
+                    step.action()
+                } label: {
+                    HStack(spacing: 6) {
+                        if isConfirmingGrant {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        Text(isConfirmingGrant ? "Granted" : "Grant Permission")
+                            .font(.system(size: 14, weight: .semibold))
                     }
-                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.vertical, MuesliTheme.spacing12)
+                    .background(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+                .disabled(isConfirmingGrant)
+                .animation(.easeInOut(duration: 0.2), value: isConfirmingGrant)
+
+                // Progress dots
+                HStack(spacing: 6) {
+                    ForEach(0..<total, id: \.self) { i in
+                        Circle()
+                            .fill(progressDotColor(
+                                index: i,
+                                currentIndex: displayIndex,
+                                isConfirmingGrant: isConfirmingGrant
+                            ))
+                            .frame(width: 8, height: 8)
+                    }
+                }
+
+                Button {
+                    openSystemSettings(systemSettingsPane(for: displayIndex))
+                } label: {
+                    Text("Not seeing a prompt? Open System Settings")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.accent)
+                }
+                .buttonStyle(.plain)
+            } else {
+                // All granted
+                VStack(spacing: MuesliTheme.spacing8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(MuesliTheme.success)
+
+                    Text("All permissions granted")
+                        .font(MuesliTheme.title1())
+                        .foregroundStyle(MuesliTheme.textPrimary)
                 }
             }
 
@@ -432,6 +520,29 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
         .onAppear { startPermissionPolling() }
         .onDisappear { stopPermissionPolling() }
+    }
+
+    private func systemSettingsPane(for permissionIndex: Int) -> String {
+        let steps = permissionSteps
+        guard permissionIndex < steps.count else { return "Privacy_Microphone" }
+        switch steps[permissionIndex].name {
+        case "Microphone": return "Privacy_Microphone"
+        case "Accessibility": return "Privacy_Accessibility"
+        case "Input Monitoring": return "Privacy_ListenEvent"
+        case "Screen Recording", "Screen & System Audio": return "Privacy_ScreenCapture"
+        case "System Audio": return "Privacy_ScreenCapture"
+        default: return "Privacy_Microphone"
+        }
+    }
+
+    private func progressDotColor(index: Int, currentIndex: Int, isConfirmingGrant: Bool) -> Color {
+        if index < currentIndex || (isConfirmingGrant && index == currentIndex) {
+            return MuesliTheme.success
+        }
+        if index == currentIndex {
+            return MuesliTheme.accent
+        }
+        return MuesliTheme.surfaceBorder
     }
 
     private func permissionRow(icon: String, name: String, description: String, granted: Bool, action: @escaping () -> Void) -> some View {
@@ -476,7 +587,11 @@ struct OnboardingView: View {
     }
 
     private var allPermissionsGranted: Bool {
-        micGranted && accessibilityGranted && inputMonitoringGranted && screenRecordingGranted
+        let core = micGranted && accessibilityGranted && inputMonitoringGranted
+        if appState.config.useCoreAudioTap {
+            return core && systemAudioGranted && screenRecordingGranted
+        }
+        return core && screenRecordingGranted
     }
 
     private func startPermissionPolling() {
@@ -499,6 +614,77 @@ struct OnboardingView: View {
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringGranted = CGPreflightListenEventAccess()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        refreshSystemAudioPermissionIfNeeded()
+
+        if let grantingPermissionName, isPermissionGranted(named: grantingPermissionName) {
+            notePermissionGranted(grantingPermissionName)
+        }
+    }
+
+    private func refreshSystemAudioPermissionIfNeeded() {
+        guard appState.config.useCoreAudioTap, !isCheckingSystemAudioPermission else { return }
+        isCheckingSystemAudioPermission = true
+
+        Task {
+            let granted = await Task.detached(priority: .utility) {
+                CoreAudioSystemRecorder.checkSystemAudioPermission()
+            }.value
+            await MainActor.run {
+                self.systemAudioGranted = granted
+                self.isCheckingSystemAudioPermission = false
+                if let grantingPermissionName, self.isPermissionGranted(named: grantingPermissionName) {
+                    self.notePermissionGranted(grantingPermissionName)
+                }
+            }
+        }
+    }
+
+    private func resolveSystemAudioPermissionAfterRequest() async {
+        let granted = await Task.detached(priority: .utility) {
+            CoreAudioSystemRecorder.checkSystemAudioPermission()
+        }.value
+        await MainActor.run {
+            self.systemAudioGranted = granted
+            if granted {
+                self.notePermissionGranted("System Audio")
+            }
+            self.saveProgress(atStep: self.currentStep)
+        }
+    }
+
+    private func isPermissionGranted(named permissionName: String) -> Bool {
+        switch permissionName {
+        case "Microphone":
+            return micGranted
+        case "Accessibility":
+            return accessibilityGranted
+        case "Input Monitoring":
+            return inputMonitoringGranted
+        case "System Audio":
+            return systemAudioGranted
+        case "Screen Recording", "Screen & System Audio":
+            return screenRecordingGranted
+        default:
+            return false
+        }
+    }
+
+    @MainActor
+    private func notePermissionGranted(_ permissionName: String) {
+        guard recentlyGrantedPermissionName != permissionName else { return }
+        grantingPermissionName = nil
+        recentlyGrantedPermissionName = permissionName
+        saveProgress(atStep: currentStep)
+        NSApp.activate(ignoringOtherApps: true)
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(850))
+            if recentlyGrantedPermissionName == permissionName {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    recentlyGrantedPermissionName = nil
+                }
+            }
+        }
     }
 
     private func saveProgress(atStep step: Int? = nil) {
@@ -508,7 +694,8 @@ struct OnboardingView: View {
             selectedBackendKey: selectedBackend.backend,
             selectedModelKey: selectedBackend.model,
             hotkeyKeyCode: selectedHotkey.keyCode,
-            hotkeyLabel: selectedHotkey.label
+            hotkeyLabel: selectedHotkey.label,
+            systemAudioRequested: systemAudioGranted
         )
         OnboardingProgress.save(progress)
     }
@@ -516,6 +703,20 @@ struct OnboardingView: View {
     private func saveProgressAndRestart() {
         saveProgress(atStep: Self.dictationTestStep)
         controller.relaunchApp()
+    }
+
+    private func requestScreenRecordingDuringOnboarding() {
+        saveProgress(atStep: Self.dictationTestStep)
+        CGRequestScreenCaptureAccess()
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            screenRecordingGranted = CGPreflightScreenCaptureAccess()
+            if screenRecordingGranted {
+                notePermissionGranted(appState.config.useCoreAudioTap ? "Screen Recording" : "Screen & System Audio")
+                saveProgress(atStep: Self.dictationTestStep)
+            }
+        }
     }
 
     private func openSystemSettings(_ pane: String) {
@@ -1028,6 +1229,7 @@ class EditableNSTextField: NSTextField {
 struct OnboardingTextField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
+    var onSubmit: (() -> Void)?
 
     func makeNSView(context: Context) -> EditableNSTextField {
         let field = EditableNSTextField()
@@ -1048,19 +1250,29 @@ struct OnboardingTextField: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, onSubmit: onSubmit)
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
         @Binding var text: String
+        let onSubmit: (() -> Void)?
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, onSubmit: (() -> Void)?) {
             _text = text
+            self.onSubmit = onSubmit
         }
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             text = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                onSubmit?()
+                return true
+            }
+            return false
         }
     }
 }
