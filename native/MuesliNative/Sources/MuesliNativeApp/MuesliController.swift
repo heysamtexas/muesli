@@ -101,6 +101,7 @@ final class MuesliController: NSObject {
 
     private(set) var config: AppConfig
     private(set) var selectedBackend: BackendOption
+    private(set) var selectedMeetingTranscriptionBackend: BackendOption
     private(set) var selectedMeetingSummaryBackend: MeetingSummaryBackendOption
     private var activeMeetingSession: MeetingSession?
     private var dictationStartedAt: Date?
@@ -131,6 +132,9 @@ final class MuesliController: NSObject {
         self.selectedBackend = BackendOption.all.first(where: {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
         }) ?? .whisper
+        self.selectedMeetingTranscriptionBackend = BackendOption.all.first(where: {
+            $0.backend == loadedConfig.meetingTranscriptionBackend && $0.model == loadedConfig.meetingTranscriptionModel
+        }) ?? self.selectedBackend
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .openAI
@@ -186,6 +190,12 @@ final class MuesliController: NSObject {
             self?.handleCancel()
             self?.indicator.isToggleDictation = false
             self?.hotkeyMonitor.cancelToggleMode()
+        }
+        indicator.onPositionSaved = { [weak self] center in
+            self?.updateConfig {
+                $0.indicatorAnchor = .custom
+                $0.indicatorOrigin = CGPointCodable(x: center.x, y: center.y)
+            }
         }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -252,6 +262,12 @@ final class MuesliController: NSObject {
                 backend: self.selectedBackend,
                 enablePostProcessor: self.config.enablePostProcessor && ppOption != nil
             )
+            if self.selectedMeetingTranscriptionBackend != self.selectedBackend {
+                await self.transcriptionCoordinator.preload(
+                    backend: self.selectedMeetingTranscriptionBackend,
+                    enablePostProcessor: false
+                )
+            }
             await MainActor.run {
                 self.refreshUI()
             }
@@ -384,6 +400,7 @@ final class MuesliController: NSObject {
         appState.dictationStats = dictationStats()
         appState.meetingStats = meetingStats()
         appState.selectedBackend = selectedBackend
+        appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
         appState.config = config
@@ -406,6 +423,9 @@ final class MuesliController: NSObject {
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
+        selectedMeetingTranscriptionBackend = BackendOption.all.first(where: {
+            $0.backend == config.meetingTranscriptionBackend && $0.model == config.meetingTranscriptionModel
+        }) ?? selectedBackend
         selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == config.meetingSummaryBackend
         }) ?? .openAI
@@ -419,6 +439,7 @@ final class MuesliController: NSObject {
             indicator.closeIfIdle()
         }
         appState.selectedBackend = selectedBackend
+        appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
@@ -448,6 +469,20 @@ final class MuesliController: NSObject {
             await MainActor.run {
                 self.statusBarController?.refresh()
                 self.historyWindowController?.updateBackendLabel()
+            }
+        }
+    }
+
+    func selectMeetingTranscriptionBackend(_ option: BackendOption) {
+        updateConfig {
+            $0.meetingTranscriptionBackend = option.backend
+            $0.meetingTranscriptionModel = option.model
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.transcriptionCoordinator.preload(backend: option, enablePostProcessor: false)
+            await MainActor.run {
+                self.statusBarController?.refresh()
             }
         }
     }
@@ -727,6 +762,13 @@ final class MuesliController: NSObject {
         updateConfig { $0.customWords.append(word) }
     }
 
+    func updateCustomWord(_ word: CustomWord) {
+        updateConfig { config in
+            guard let index = config.customWords.firstIndex(where: { $0.id == word.id }) else { return }
+            config.customWords[index] = word
+        }
+    }
+
     func removeCustomWord(id: UUID) {
         updateConfig { $0.customWords.removeAll { $0.id == id } }
     }
@@ -811,6 +853,8 @@ final class MuesliController: NSObject {
             config.userName = userName
             config.sttBackend = backend.backend
             config.sttModel = backend.model
+            config.meetingTranscriptionBackend = backend.backend
+            config.meetingTranscriptionModel = backend.model
             config.dictationHotkey = hotkey
             if let summaryBackend {
                 config.meetingSummaryBackend = summaryBackend.backend
@@ -1194,7 +1238,7 @@ final class MuesliController: NSObject {
         let meetingSession = MeetingSession(
             title: title,
             calendarEventID: nil,
-            backend: selectedBackend,
+            backend: selectedMeetingTranscriptionBackend,
             runtime: runtime,
             config: config,
             transcriptionCoordinator: transcriptionCoordinator
@@ -1999,6 +2043,7 @@ final class MuesliController: NSObject {
             if let replacement = word.replacement {
                 dict["replacement"] = replacement
             }
+            dict["matchingThreshold"] = word.matchingThreshold
             return dict
         }
     }

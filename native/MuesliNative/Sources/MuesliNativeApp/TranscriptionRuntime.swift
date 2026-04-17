@@ -406,7 +406,8 @@ actor TranscriptionCoordinator {
         guard !customWords.isEmpty, !result.text.isEmpty else { return result }
         let entries = customWords.compactMap { dict -> CustomWord? in
             guard let word = dict["word"] as? String else { return nil }
-            return CustomWord(word: word, replacement: dict["replacement"] as? String)
+            let threshold = dict["matchingThreshold"] as? Double ?? 0.85
+            return CustomWord(word: word, replacement: dict["replacement"] as? String, matchingThreshold: threshold)
         }
         guard !entries.isEmpty else { return result }
         let correctedText = CustomWordMatcher.apply(text: result.text, customWords: entries)
