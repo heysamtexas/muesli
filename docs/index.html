@@ -301,6 +301,22 @@
     }
     .topnav a:hover { color: rgba(255,255,255,0.9); }
     .topnav .dot { color: rgba(255,255,255,0.2); }
+    .gh-stars {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: rgba(255,255,255,0.6);
+      text-decoration: none;
+      transition: color 0.3s ease;
+    }
+    .gh-stars:hover { color: rgba(255,255,255,0.9); }
+    .gh-stars svg { width: 14px; height: 14px; fill: currentColor; transition: transform 0.3s ease, color 0.3s ease; }
+    .gh-stars:hover svg { color: #f0c040; transform: scale(1.15); }
+    .gh-stars .star-count {
+      font-variant-numeric: tabular-nums;
+      min-width: 1.2em;
+      transition: opacity 0.3s ease;
+    }
 
     /* ── footer ── */
     footer {
@@ -403,7 +419,11 @@
   </svg>
 
   <nav class="topnav">
-    <a href="https://github.com/pHequals7/muesli" target="_blank" rel="noopener">contribute on github</a>
+    <a class="gh-stars" href="https://github.com/pHequals7/muesli" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>
+      <span>star on github</span>
+      <span class="star-count" id="star-count"></span>
+    </a>
     <span class="dot">&middot;</span>
     <a href="https://buymeacoffee.com/phequals7" target="_blank" rel="noopener">support</a>
   </nav>
@@ -458,6 +478,18 @@
   </footer>
 
 <script>
+/* ── github stars ── */
+fetch('https://api.github.com/repos/pHequals7/muesli')
+  .then(r => r.json())
+  .then(d => {
+    const el = document.getElementById('star-count');
+    if (el && d.stargazers_count != null) {
+      const n = d.stargazers_count;
+      el.textContent = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : n;
+    }
+  })
+  .catch(() => {});
+
 /* ═══════════════════════════════════════════════════════════
    free speech · muesli
    constant brownian drift · cursor reveals quotes
