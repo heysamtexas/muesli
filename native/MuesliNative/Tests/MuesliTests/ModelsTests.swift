@@ -343,6 +343,19 @@ struct AppConfigTests {
         #expect(config.resolvedCohereLanguage == .english)
     }
 
+    @Test("cohere language codes are normalized case-insensitively")
+    func cohereLanguageCodesNormalizeCaseInsensitively() throws {
+        let json = """
+        {
+          "cohere_language": " Fr "
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.cohereLanguage == CohereTranscribeLanguage.french.rawValue)
+        #expect(config.resolvedCohereLanguage == .french)
+    }
+
     @Test("meeting transcription falls back to dictation model when missing")
     func meetingTranscriptionFallsBackToDictationModel() throws {
         let json = """
