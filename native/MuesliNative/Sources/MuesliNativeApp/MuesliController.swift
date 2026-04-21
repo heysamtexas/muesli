@@ -528,6 +528,12 @@ final class MuesliController: NSObject {
         }
     }
 
+    func selectCohereLanguage(_ language: CohereTranscribeLanguage) {
+        updateConfig {
+            $0.cohereLanguage = language.rawValue
+        }
+    }
+
     var isPostProcessorReady: Bool {
         config.enablePostProcessor && runtimePostProcessorOption() != nil
     }
@@ -978,12 +984,20 @@ final class MuesliController: NSObject {
         progress(1.0, nil)
     }
 
-    func completeOnboarding(userName: String, backend: BackendOption, hotkey: HotkeyConfig, summaryBackend: MeetingSummaryBackendOption?, apiKey: String?) {
+    func completeOnboarding(
+        userName: String,
+        backend: BackendOption,
+        cohereLanguage: CohereTranscribeLanguage,
+        hotkey: HotkeyConfig,
+        summaryBackend: MeetingSummaryBackendOption?,
+        apiKey: String?
+    ) {
         updateConfig { config in
             config.hasCompletedOnboarding = true
             config.userName = userName
             config.sttBackend = backend.backend
             config.sttModel = backend.model
+            config.cohereLanguage = cohereLanguage.rawValue
             config.meetingTranscriptionBackend = backend.backend
             config.meetingTranscriptionModel = backend.model
             config.dictationHotkey = hotkey
@@ -2041,6 +2055,7 @@ final class MuesliController: NSObject {
                 let result = try await self.transcriptionCoordinator.transcribeDictation(
                     at: wavURL,
                     backend: self.selectedBackend,
+                    cohereLanguage: self.config.resolvedCohereLanguage,
                     enablePostProcessor: self.isPostProcessorReady,
                     customWords: self.serializedCustomWords(),
                     appContext: self.capturedDictationContext.map { DictationContextCapture.formatForPrompt($0) }
