@@ -43,6 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdown()
     }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if controller?.shouldTerminateApplication() == false {
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
 }
 
 @MainActor
