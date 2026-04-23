@@ -14,6 +14,7 @@ final class StreamingVadController {
 
     private struct State {
         var generation = 0
+        var drainerEpoch = 0
         var isActive = false
         var isDraining = false
         var pendingChunks: [[Float]] = []
@@ -127,7 +128,8 @@ final class StreamingVadController {
             state.lastRotationTime = Date()
         }
         DispatchQueue.main.async { [weak self] in
-            self?.maxDurationTimer?.fireDate = Date().addingTimeInterval(self?.maxChunkDuration ?? 60)
+            guard let self else { return }
+            self.maxDurationTimer?.fireDate = Date().addingTimeInterval(self.maxChunkDuration)
         }
     }
 
@@ -146,23 +148,24 @@ final class StreamingVadController {
     }
 
     private func startDrainIfNeeded() {
-        let shouldStart = lock.withLock { state in
-            guard state.isActive, state.streamState != nil, !state.isDraining else { return false }
-            guard !state.pendingChunks.isEmpty else { return false }
+        let drainerEpoch = lock.withLock { state -> Int? in
+            guard state.isActive, state.streamState != nil, !state.isDraining else { return nil }
+            guard !state.pendingChunks.isEmpty else { return nil }
+            state.drainerEpoch += 1
             state.isDraining = true
-            return true
+            return state.drainerEpoch
         }
-        guard shouldStart else { return }
+        guard let drainerEpoch else { return }
 
         Task { [weak self] in
-            await self?.drainQueue()
+            await self?.drainQueue(drainerEpoch: drainerEpoch)
         }
     }
 
-    private func drainQueue() async {
+    private func drainQueue(drainerEpoch: Int) async {
         while true {
             let next: (generation: Int, chunk: [Float], streamState: VadStreamState)? = lock.withLock { state in
-                guard state.isActive else {
+                guard state.isActive, state.isDraining, state.drainerEpoch == drainerEpoch else {
                     state.isDraining = false
                     state.pendingChunks.removeAll(keepingCapacity: false)
                     return nil
@@ -201,7 +204,8 @@ final class StreamingVadController {
                 if shouldRotate {
                     fputs("[vad] speech end detected, rotating chunk\n", stderr)
                     DispatchQueue.main.async { [weak self] in
-                        self?.maxDurationTimer?.fireDate = Date().addingTimeInterval(self?.maxChunkDuration ?? 60)
+                        guard let self else { return }
+                        self.maxDurationTimer?.fireDate = Date().addingTimeInterval(self.maxChunkDuration)
                     }
                     onChunkBoundary?()
                 }

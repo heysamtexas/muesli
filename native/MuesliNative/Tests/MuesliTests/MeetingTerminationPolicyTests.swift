@@ -62,4 +62,16 @@ struct MeetingTerminationPolicyTests {
             ) == .processing
         )
     }
+
+    @Test("warns while stopping even when session is already nil")
+    func warnsDuringStopWithNoSession() {
+        #expect(
+            MeetingTerminationPolicy.state(
+                isStarting: false,
+                hasActiveSession: false,
+                isRecording: false,
+                isStopping: true
+            ) == .processing
+        )
+    }
 }
