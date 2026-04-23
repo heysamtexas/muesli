@@ -1377,6 +1377,7 @@ final class MuesliController: NSObject {
         )
     }
 
+    @MainActor
     func shouldTerminateApplication() -> Bool {
         let state = meetingTerminationState
         let messageText: String

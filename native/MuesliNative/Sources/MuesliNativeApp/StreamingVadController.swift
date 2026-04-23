@@ -13,6 +13,7 @@ final class StreamingVadController {
     var onChunkBoundary: (() -> Void)?
 
     private struct State {
+        var generation = 0
         var isActive = false
         var isDraining = false
         var pendingChunks: [[Float]] = []
@@ -55,22 +56,23 @@ final class StreamingVadController {
     }
 
     func start() {
-        let shouldStart = lock.withLock { state in
-            guard !state.isActive else { return false }
+        let startGeneration = lock.withLock { state -> Int? in
+            guard !state.isActive else { return nil }
+            state.generation += 1
             state.isActive = true
             state.isDraining = false
             state.pendingChunks.removeAll(keepingCapacity: true)
             state.streamState = nil
             state.lastRotationTime = Date()
-            return true
+            return state.generation
         }
-        guard shouldStart else { return }
+        guard let startGeneration else { return }
 
         Task { [weak self] in
             guard let self else { return }
             let initialState = await self.makeInitialState()
             let shouldKickDrain = self.lock.withLock { state in
-                guard state.isActive else { return false }
+                guard state.isActive, state.generation == startGeneration else { return false }
                 state.streamState = initialState
                 return !state.pendingChunks.isEmpty
             }
@@ -82,7 +84,7 @@ final class StreamingVadController {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.maxDurationTimer?.invalidate()
-            guard self.lock.withLock({ $0.isActive }) else { return }
+            guard self.lock.withLock({ $0.isActive && $0.generation == startGeneration }) else { return }
             self.maxDurationTimer = Timer.scheduledTimer(withTimeInterval: self.maxChunkDuration, repeats: true) { [weak self] _ in
                 self?.handleMaxDurationTimer()
             }
@@ -90,13 +92,18 @@ final class StreamingVadController {
     }
 
     func stop() {
-        lock.withLock { state in
+        let stopGeneration = lock.withLock { state in
             state.isActive = false
             state.pendingChunks.removeAll(keepingCapacity: false)
             state.streamState = nil
+            return state.generation
         }
-        maxDurationTimer?.invalidate()
-        maxDurationTimer = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard self.lock.withLock({ !$0.isActive && $0.generation == stopGeneration }) else { return }
+            self.maxDurationTimer?.invalidate()
+            self.maxDurationTimer = nil
+        }
     }
 
     /// Feed a chunk of Float audio samples (typically 4096 samples = 256ms at 16kHz).
@@ -154,7 +161,7 @@ final class StreamingVadController {
 
     private func drainQueue() async {
         while true {
-            let next: (chunk: [Float], streamState: VadStreamState)? = lock.withLock { state in
+            let next: (generation: Int, chunk: [Float], streamState: VadStreamState)? = lock.withLock { state in
                 guard state.isActive else {
                     state.isDraining = false
                     state.pendingChunks.removeAll(keepingCapacity: false)
@@ -168,7 +175,7 @@ final class StreamingVadController {
                     state.isDraining = false
                     return nil
                 }
-                return (state.pendingChunks.removeFirst(), streamState)
+                return (state.generation, state.pendingChunks.removeFirst(), streamState)
             }
 
             guard let next else { return }
@@ -177,7 +184,7 @@ final class StreamingVadController {
                 let result = try await processStreamChunk(next.chunk, next.streamState)
 
                 let shouldRotate = lock.withLock { state in
-                    guard state.isActive else { return false }
+                    guard state.isActive, state.generation == next.generation else { return false }
                     state.streamState = result.state
 
                     guard let event = result.event, event.kind == .speechEnd else {

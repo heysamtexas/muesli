@@ -39,6 +39,18 @@ struct MeetingTerminationPolicyTests {
         )
     }
 
+    @Test("warns while a session exists before recording state is visible")
+    func warnsForActiveSessionBeforeRecording() {
+        #expect(
+            MeetingTerminationPolicy.state(
+                isStarting: false,
+                hasActiveSession: true,
+                isRecording: false,
+                isStopping: false
+            ) == .processing
+        )
+    }
+
     @Test("warns while a stopped meeting is still processing")
     func warnsDuringProcessing() {
         #expect(
