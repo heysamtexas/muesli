@@ -32,8 +32,13 @@ struct MeetingPromptDecision: Equatable {
 final class MeetingPromptStateMachine {
     private(set) var visiblePromptID: String?
     private var userSuppressedUntilByID: [String: Date] = [:]
-    private var autoDismissedCandidateIDs = Set<String>()
+    private var autoDismissedUntilByID: [String: Date] = [:]
     private var lastCandidateID: String?
+    private let autoDismissCooldown: TimeInterval
+
+    init(autoDismissCooldown: TimeInterval = 120) {
+        self.autoDismissCooldown = autoDismissCooldown
+    }
 
     func evaluate(
         candidate: MeetingCandidate?,
@@ -45,6 +50,7 @@ final class MeetingPromptStateMachine {
         now: Date
     ) -> MeetingPromptDecision {
         expireUserSuppressions(now: now)
+        expireAutoDismissSuppressions(now: now)
         reconcileVisibility(visibility)
 
         guard detectionEnabled else {
@@ -67,7 +73,6 @@ final class MeetingPromptStateMachine {
 
         guard let candidate else {
             lastCandidateID = nil
-            autoDismissedCandidateIDs.removeAll()
             return visiblePromptID == nil
                 ? MeetingPromptDecision(action: .none, candidate: nil, reason: .noCandidate)
                 : MeetingPromptDecision(action: .hide, candidate: nil, reason: .noCandidate)
@@ -75,14 +80,13 @@ final class MeetingPromptStateMachine {
 
         if candidate.id != lastCandidateID {
             lastCandidateID = candidate.id
-            autoDismissedCandidateIDs.removeAll()
         }
 
         if let until = userSuppressedUntilByID[candidate.id], now < until {
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .userDismissedSuppression)
         }
 
-        if autoDismissedCandidateIDs.contains(candidate.id) {
+        if let until = autoDismissedUntilByID[candidate.id], now < until {
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .autoDismissedCooldown)
         }
 
@@ -98,16 +102,16 @@ final class MeetingPromptStateMachine {
         lastCandidateID = candidate.id
     }
 
-    func markAutoDismissed(_ candidate: MeetingCandidate) {
+    func markAutoDismissed(_ candidate: MeetingCandidate, now: Date = Date()) {
         if visiblePromptID == candidate.id { visiblePromptID = nil }
         lastCandidateID = candidate.id
-        autoDismissedCandidateIDs.insert(candidate.id)
+        autoDismissedUntilByID[candidate.id] = now.addingTimeInterval(autoDismissCooldown)
     }
 
     func markUserDismissed(_ candidate: MeetingCandidate, until: Date) {
         if visiblePromptID == candidate.id { visiblePromptID = nil }
         userSuppressedUntilByID[candidate.id] = until
-        autoDismissedCandidateIDs.remove(candidate.id)
+        autoDismissedUntilByID.removeValue(forKey: candidate.id)
     }
 
     func markClosed(_ candidate: MeetingCandidate) {
@@ -128,5 +132,9 @@ final class MeetingPromptStateMachine {
 
     private func expireUserSuppressions(now: Date) {
         userSuppressedUntilByID = userSuppressedUntilByID.filter { _, until in until > now }
+    }
+
+    private func expireAutoDismissSuppressions(now: Date) {
+        autoDismissedUntilByID = autoDismissedUntilByID.filter { _, until in until > now }
     }
 }

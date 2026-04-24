@@ -206,6 +206,7 @@ final class MeetingNotificationController {
             DispatchQueue.main.async {
                 self?.animateOut {
                     let autoDismiss = self?.onAutoDismiss
+                    self?.onClose = nil
                     self?.close()
                     autoDismiss?()
                 }

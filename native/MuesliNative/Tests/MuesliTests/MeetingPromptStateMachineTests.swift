@@ -56,7 +56,7 @@ struct MeetingPromptStateMachineTests {
         let candidate = candidate()
 
         machine.markShown(candidate)
-        machine.markAutoDismissed(candidate)
+        machine.markAutoDismissed(candidate, now: now)
         let result = decision(machine, candidate: candidate)
 
         #expect(machine.visiblePromptID == nil)
@@ -71,7 +71,7 @@ struct MeetingPromptStateMachineTests {
         let newCandidate = candidate("googleMeet:meet.google.com/abc-defg-hij")
 
         machine.markShown(oldCandidate)
-        machine.markAutoDismissed(oldCandidate)
+        machine.markAutoDismissed(oldCandidate, now: now)
         let result = decision(machine, candidate: newCandidate)
 
         #expect(result.action == .show)
@@ -89,6 +89,35 @@ struct MeetingPromptStateMachineTests {
 
         #expect(decision(machine, candidate: dismissed).reason == .userDismissedSuppression)
         #expect(decision(machine, candidate: other).action == .show)
+    }
+
+    @Test("auto-dismiss cooldown survives one-tick candidate dropout")
+    func autoDismissCooldownSurvivesCandidateDropout() {
+        let machine = MeetingPromptStateMachine(autoDismissCooldown: 120)
+        let candidate = candidate()
+
+        machine.markShown(candidate)
+        machine.markAutoDismissed(candidate, now: now)
+
+        #expect(decision(machine, candidate: nil, now: now.addingTimeInterval(1)).reason == .noCandidate)
+
+        let result = decision(machine, candidate: candidate, now: now.addingTimeInterval(2))
+
+        #expect(result.action == .none)
+        #expect(result.reason == .autoDismissedCooldown)
+    }
+
+    @Test("auto-dismiss cooldown expires for same candidate")
+    func autoDismissCooldownExpires() {
+        let machine = MeetingPromptStateMachine(autoDismissCooldown: 10)
+        let candidate = candidate()
+
+        machine.markShown(candidate)
+        machine.markAutoDismissed(candidate, now: now)
+
+        let result = decision(machine, candidate: candidate, now: now.addingTimeInterval(11))
+
+        #expect(result.action == .show)
     }
 
     @Test("prompt does not show while recording or starting recording")
