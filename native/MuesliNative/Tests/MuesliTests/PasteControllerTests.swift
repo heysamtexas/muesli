@@ -69,7 +69,7 @@ struct PasteControllerTests {
     }
 
     @Test("paste temporarily writes text to clipboard for Cmd+V")
-    func pasteWritesTextToClipboard() {
+    func pasteWritesTextToClipboard() async {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
@@ -79,6 +79,8 @@ struct PasteControllerTests {
         // Immediately after paste(), the clipboard holds the dictation text
         // (restoration happens asynchronously after ~500ms)
         #expect(pasteboard.string(forType: .string) == "dictated text")
+
+        _ = await waitForClipboardString(expected: "original")
     }
 
     @Test("paste restores clipboard after delay")

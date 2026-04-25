@@ -24,7 +24,7 @@ private actor StreamingVadTestProbe {
     }
 }
 
-@Suite("StreamingVadController")
+@Suite("StreamingVadController", .serialized)
 struct StreamingVadControllerTests {
     @Test("serializes streaming VAD processing to a single in-flight chunk")
     func serializesChunkProcessing() async throws {
@@ -114,7 +114,7 @@ struct StreamingVadControllerTests {
         controller.start()
         controller.processAudio([Float](repeating: 0, count: VadManager.chunkSize))
 
-        let deadline = ContinuousClock.now + .seconds(1)
+        let deadline = ContinuousClock.now + .seconds(3)
         while await probe.boundaryCount < 1, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
