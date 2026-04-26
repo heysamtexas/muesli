@@ -300,6 +300,38 @@ echo "[11/11] Updating preprod appcast..."
 
 perl -0pi -e 's{https://pHequals7\.github\.io/muesli/(MuesliPreprod-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/pHequals7/muesli/releases/download/v$2/$1"}ge' "$APPCAST_PATH"
 perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$APPCAST_PATH"
+python3 - "$APPCAST_PATH" "$VERSION" <<'PY'
+import re
+import sys
+
+appcast_path, version = sys.argv[1], sys.argv[2]
+text = open(appcast_path, encoding="utf-8").read()
+
+item_re = re.compile(r"\n[ \t]*<item>\n.*?\n[ \t]*</item>", re.S)
+items = list(item_re.finditer(text))
+if not items:
+    raise SystemExit("ERROR: appcast has no items after generation")
+
+target = None
+for item in items:
+    if f"<sparkle:version>{version}</sparkle:version>" in item.group(0):
+        target = item
+        break
+
+if target is None:
+    raise SystemExit(f"ERROR: generated appcast is missing version {version}")
+if target == items[0]:
+    raise SystemExit(0)
+
+target_block = target.group(0)
+without_target = text[:target.start()] + text[target.end():]
+first_item = item_re.search(without_target)
+if first_item is None:
+    raise SystemExit("ERROR: appcast has no insertion point after reordering")
+
+updated = without_target[:first_item.start()] + target_block + without_target[first_item.start():]
+open(appcast_path, "w", encoding="utf-8").write(updated)
+PY
 
 "$ROOT/scripts/verify_update_flow.sh" \
   --version "$VERSION" \

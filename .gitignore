@@ -29,6 +29,7 @@ tmp-install/
 # Signing/certificates & releases
 developerID_application.cer
 dist-notary/
+dist-preprod/
 dist-release/
 scripts/notarize_dmg.sh
 scripts/dev-test.sh
