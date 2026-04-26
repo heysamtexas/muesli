@@ -8,18 +8,12 @@ import MuesliCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: MuesliController?
     private(set) var updaterController: SPUStandardUpdaterController?
-    private let updateFailureGuidancePresenter = UpdateFailureGuidancePresenter()
+    private let sparkleUpdateDelegate = SparkleUpdateDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let telemetryConfig = TelemetryDeck.Config(appID: "7F2B7846-1CB5-4FE6-8ABC-56F217B06A86")
         TelemetryDeck.initialize(config: telemetryConfig)
         TelemetryDeck.signal("app.launched")
-
-        updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: updateFailureGuidancePresenter,
-            userDriverDelegate: nil
-        )
 
         do {
             let runtime = try RuntimePaths.resolve()
@@ -28,7 +22,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.applicationIconImage = image
             }
             let controller = MuesliController(runtime: runtime)
-            controller.updaterController = updaterController
+            sparkleUpdateDelegate.appState = controller.appState
+            if Self.hasConfiguredSparkleFeed {
+                let updaterController = SPUStandardUpdaterController(
+                    startingUpdater: true,
+                    updaterDelegate: sparkleUpdateDelegate,
+                    userDriverDelegate: nil
+                )
+                controller.updaterController = updaterController
+                self.updaterController = updaterController
+            }
             self.controller = controller
             controller.start()
         } catch {
@@ -50,14 +53,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return .terminateNow
     }
+
+    private static var hasConfiguredSparkleFeed: Bool {
+        guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String else {
+            return false
+        }
+        return !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 @MainActor
-final class UpdateFailureGuidancePresenter: NSObject, SPUUpdaterDelegate {
+final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
+    private static let noUpdateErrorCode = 1001
+
+    weak var appState: AppState?
     private var lastPresentedAt: Date?
+
+    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        appState?.sparkleUpdateStatus = .checking
+    }
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        let nsError = error as NSError
+        if nsError.domain == SUSparkleErrorDomain,
+           nsError.code == Self.noUpdateErrorCode {
+            appState?.sparkleUpdateStatus = .upToDate
+        } else {
+            appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+        }
+    }
+
+    func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) {
+        appState?.sparkleUpdateStatus = .downloaded(version: item.displayVersionString)
+    }
+
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        appState?.sparkleUpdateStatus = .installing(version: item.displayVersionString)
+    }
+
+    func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice, forUpdate item: SUAppcastItem, state: SPUUserUpdateState) {
+        switch choice {
+        case .install:
+            appState?.sparkleUpdateStatus = .installing(version: item.displayVersionString)
+        case .dismiss where state.stage == .downloaded:
+            appState?.sparkleUpdateStatus = .downloaded(version: item.displayVersionString)
+        case .dismiss:
+            appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+        case .skip:
+            appState?.sparkleUpdateStatus = .idle
+        @unknown default:
+            appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+        }
+    }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         let nsError = error as NSError
+        appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
         guard UpdateFailureGuidance.shouldShowFallback(for: nsError) else { return }
 
         // Sparkle shows its own error alert first. Delay briefly so this
@@ -66,6 +121,10 @@ final class UpdateFailureGuidancePresenter: NSObject, SPUUpdaterDelegate {
             try? await Task.sleep(nanoseconds: 400_000_000)
             self?.showManualInstallGuidance()
         }
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        appState?.sparkleLastCheckedAt = Date()
     }
 
     private func showManualInstallGuidance() {

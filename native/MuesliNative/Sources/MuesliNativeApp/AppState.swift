@@ -17,6 +17,17 @@ enum MeetingsNavigationState: Equatable {
     case document(Int64)
 }
 
+enum SparkleUpdateStatus: Equatable {
+    case idle
+    case checking
+    case available(version: String)
+    case downloaded(version: String)
+    case installing(version: String)
+    case upToDate
+    case disabled(message: String)
+    case failed(message: String)
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -52,6 +63,8 @@ final class AppState {
     var isGoogleCalendarAuthenticated: Bool = false
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
+    var sparkleUpdateStatus: SparkleUpdateStatus = .idle
+    var sparkleLastCheckedAt: Date?
 
     // Dictation pagination & filtering
     var dictationPageSize: Int = 50
