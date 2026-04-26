@@ -99,6 +99,7 @@ final class MuesliController: NSObject {
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     var updaterController: SPUStandardUpdaterController?
+    private var updateCheckStatusGeneration = 0
 
     let appState = AppState()
 
@@ -1119,15 +1120,38 @@ final class MuesliController: NSObject {
             return
         }
         guard updaterController.updater.canCheckForUpdates else { return }
-        appState.sparkleUpdateStatus = .checking
+        guard !updaterController.updater.sessionInProgress else {
+            beginUpdateCheckStatusTimeout()
+            return
+        }
+        beginUpdateCheckStatusTimeout()
         updaterController.checkForUpdates(nil)
     }
 
     func refreshUpdateInformation() {
         guard case .idle = appState.sparkleUpdateStatus else { return }
         guard let updater = updaterController?.updater, updater.canCheckForUpdates else { return }
-        appState.sparkleUpdateStatus = .checking
+        guard !updater.sessionInProgress else {
+            beginUpdateCheckStatusTimeout()
+            return
+        }
+        beginUpdateCheckStatusTimeout()
         updater.checkForUpdateInformation()
+    }
+
+    private func beginUpdateCheckStatusTimeout() {
+        updateCheckStatusGeneration += 1
+        let generation = updateCheckStatusGeneration
+        appState.sparkleUpdateStatus = .checking
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.updateCheckStatusGeneration == generation else { return }
+            guard case .checking = self.appState.sparkleUpdateStatus else { return }
+            self.appState.sparkleUpdateStatus = .failed(
+                message: "The updater did not finish checking. Please try again in a moment, or quit and reopen Muesli if it stays stuck."
+            )
+        }
     }
 
     @objc func quitApp() {
