@@ -5,6 +5,46 @@ import Testing
 
 @Suite("Update failure guidance")
 struct UpdateFailureGuidanceTests {
+    @Test("classifies Sparkle no-update errors as up to date")
+    func classifiesNoUpdateErrorCode() {
+        let error = NSError(domain: SUSparkleErrorDomain, code: 1001)
+
+        #expect(UpdateFailureGuidance.isNoUpdateError(error))
+    }
+
+    @Test("classifies Sparkle no-update reason as up to date")
+    func classifiesNoUpdateReason() {
+        let error = NSError(
+            domain: SUSparkleErrorDomain,
+            code: 1002,
+            userInfo: [SPUNoUpdateFoundReasonKey: 1]
+        )
+
+        #expect(UpdateFailureGuidance.isNoUpdateError(error))
+    }
+
+    @Test("classifies localized up-to-date message as up to date")
+    func classifiesLocalizedUpToDateMessage() {
+        let error = NSError(
+            domain: SUSparkleErrorDomain,
+            code: 1002,
+            userInfo: [NSLocalizedDescriptionKey: "You’re up to date!"]
+        )
+
+        #expect(UpdateFailureGuidance.isNoUpdateError(error))
+    }
+
+    @Test("does not classify unrelated Sparkle errors as up to date")
+    func rejectsUnrelatedSparkleErrors() {
+        let error = NSError(
+            domain: SUSparkleErrorDomain,
+            code: 2001,
+            userInfo: [NSLocalizedDescriptionKey: "The network connection was lost."]
+        )
+
+        #expect(!UpdateFailureGuidance.isNoUpdateError(error))
+    }
+
     @Test(
         "shows fallback for Sparkle installation failures",
         arguments: [4000, 4001, 4002, 4003, 4004, 4005, 4009, 4010, 4012, 4013]

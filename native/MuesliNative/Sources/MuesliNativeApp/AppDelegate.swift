@@ -64,8 +64,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
-    private static let noUpdateErrorCode = 1001
-
     weak var appState: AppState?
     private var lastPresentedAt: Date?
 
@@ -79,8 +77,7 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
         let nsError = error as NSError
-        if nsError.domain == SUSparkleErrorDomain,
-           nsError.code == Self.noUpdateErrorCode {
+        if UpdateFailureGuidance.isNoUpdateError(nsError) {
             appState?.sparkleUpdateStatus = .upToDate
         } else {
             appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
@@ -148,6 +145,8 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
 }
 
 enum UpdateFailureGuidance {
+    private static let noUpdateErrorCode = 1001
+
     static let downloadPageURLString = "https://phequals7.github.io/muesli/"
 
     static let message = """
@@ -155,6 +154,21 @@ enum UpdateFailureGuidance {
 
     If this keeps happening, download the latest DMG and replace Muesli manually. This can happen when the local updater cannot finish preparing or replacing the app.
     """
+
+    static func isNoUpdateError(_ error: NSError) -> Bool {
+        guard error.domain == SUSparkleErrorDomain else { return false }
+        if error.code == noUpdateErrorCode { return true }
+        if error.userInfo[SPUNoUpdateFoundReasonKey] != nil { return true }
+
+        // Some Sparkle paths report the no-update condition via localized text
+        // while still routing through the error callback. Treat that as a
+        // successful check so the About banner never shows a red failure for
+        // an up-to-date app.
+        let message = error.localizedDescription.lowercased()
+        return message.contains("up to date")
+            || message.contains("up-to-date")
+            || message.contains("no update")
+    }
 
     static func shouldShowFallback(for error: NSError) -> Bool {
         guard error.domain == SUSparkleErrorDomain else { return false }
