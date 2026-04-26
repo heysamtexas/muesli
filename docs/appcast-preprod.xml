@@ -5,5 +5,14 @@
         <description>Muesli pre-production update feed</description>
         <language>en</language>
         <!-- Items are added by scripts/release-preprod.sh -->
+        <item>
+            <title>0.6.3-preprod.1</title>
+            <pubDate>Sun, 26 Apr 2026 13:39:06 +0530</pubDate>
+            <sparkle:version>0.6.3-preprod.1</sparkle:version>
+            <sparkle:shortVersionString>0.6.3-preprod.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/pHequals7/muesli/releases/download/v0.6.3-preprod.1/MuesliPreprod-0.6.3-preprod.1.dmg" length="62301672" type="application/octet-stream" sparkle:edSignature="ubYnbH80JFVPeutpvCO3MC/XsHhbgRntn3NwMDpcZyKJADhKg6L5hgpmBqgOGVI70gs7nJDsB8KaKmMqonqCCw=="/>
+        </item>
     </channel>
 </rss>
