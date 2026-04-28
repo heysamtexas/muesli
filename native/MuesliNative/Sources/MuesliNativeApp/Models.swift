@@ -173,11 +173,111 @@ struct SummaryModelPreset {
     ]
 
     static let openRouterModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "stepfun/step-3.5-flash:free", label: "Step 3.5 Flash (free, 256k ctx)"),
-        SummaryModelPreset(id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B (free, 262k ctx)"),
-        SummaryModelPreset(id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B (free, 256k ctx)"),
-        SummaryModelPreset(id: "arcee-ai/trinity-large-preview:free", label: "Trinity Large (free, 131k ctx)"),
+        SummaryModelPreset(id: "stepfun/step-3.5-flash:free", label: "Step 3.5 Flash (256k ctx)"),
+        SummaryModelPreset(id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B (262k ctx)"),
+        SummaryModelPreset(id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B (256k ctx)"),
+        SummaryModelPreset(id: "arcee-ai/trinity-large-preview:free", label: "Trinity Large (131k ctx)"),
     ]
+
+    static func menuPresets(_ presets: [SummaryModelPreset], currentModel: String) -> [SummaryModelPreset] {
+        let trimmedModel = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty else { return presets }
+        guard !presets.contains(where: { $0.id == trimmedModel }) else { return presets }
+        return presets + [SummaryModelPreset(id: trimmedModel, label: "Custom: \(trimmedModel)")]
+    }
+}
+
+struct OpenRouterModelCatalog: Decodable {
+    let data: [OpenRouterModel]
+}
+
+struct OpenRouterModel: Decodable {
+    let id: String
+    let name: String
+    let contextLength: Int?
+    let pricing: Pricing
+    let architecture: Architecture?
+
+    struct Pricing: Decodable {
+        let prompt: String?
+        let completion: String?
+        let request: String?
+
+        var isFreeForTextGeneration: Bool {
+            isExplicitZero(prompt)
+                && isExplicitZero(completion)
+                && isZeroOrMissing(request)
+        }
+
+        private func isExplicitZero(_ value: String?) -> Bool {
+            guard let value else { return false }
+            return Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")) == 0
+        }
+
+        private func isZeroOrMissing(_ value: String?) -> Bool {
+            guard let value else { return true }
+            return Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")) == 0
+        }
+    }
+
+    struct Architecture: Decodable {
+        let outputModalities: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case outputModalities = "output_modalities"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case contextLength = "context_length"
+        case pricing
+        case architecture
+    }
+}
+
+extension OpenRouterModel {
+    var producesOnlyText: Bool {
+        guard let outputModalities = architecture?.outputModalities else {
+            return false
+        }
+        return outputModalities == ["text"]
+    }
+
+    var summaryPresetLabel: String {
+        if let contextLength, contextLength > 0 {
+            return "\(name) (\(Self.formatContextLength(contextLength)) ctx)"
+        }
+        return name
+    }
+
+    private static func formatContextLength(_ value: Int) -> String {
+        if value >= 1000 {
+            return "\(value / 1000)k"
+        }
+        return "\(value)"
+    }
+}
+
+enum OpenRouterModelCatalogFilter {
+    private static let minimumSummaryContextLength = 100_000
+
+    static func freeTextSummaryPresets(from models: [OpenRouterModel]) -> [SummaryModelPreset] {
+        models
+            .filter { model in
+                model.producesOnlyText
+                    && model.pricing.isFreeForTextGeneration
+                    && (model.contextLength ?? 0) >= minimumSummaryContextLength
+            }
+            .sorted {
+                if $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedSame {
+                    return $0.id < $1.id
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel) }
+    }
 }
 
 struct MeetingSummaryBackendOption: Equatable {

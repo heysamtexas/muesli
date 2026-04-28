@@ -161,6 +161,10 @@ struct MeetingsView: View {
         return controller.meeting(id: id)
     }
 
+    private var activeLiveMeeting: MeetingRecord? {
+        controller.activeLiveMeetingRecord()
+    }
+
     var body: some View {
         Group {
             if let meeting = currentDocumentMeeting {
@@ -199,6 +203,10 @@ struct MeetingsView: View {
                     comingUpSection
                 }
 
+                if let activeLiveMeeting {
+                    activeMeetingBanner(activeLiveMeeting)
+                }
+
                 browserHeader
 
                 if filteredMeetings.isEmpty {
@@ -217,9 +225,9 @@ struct MeetingsView: View {
                                 onCreateFolderAndMove: { name in
                                     controller.createFolderAndMoveMeeting(name: name, meetingID: meeting.id)
                                 },
-                                onDelete: {
+                                onDelete: controller.canDeleteMeeting(meeting) ? {
                                     controller.deleteMeeting(id: meeting.id)
-                                }
+                                } : nil
                             )
                         }
                     }
@@ -498,6 +506,27 @@ struct MeetingsView: View {
     @ViewBuilder
     private var browserHeaderActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
+            Button {
+                controller.startQuickNoteMeeting()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Quick Note")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(MuesliTheme.backgroundBase)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 8)
+                .background(appState.isMeetingRecording ? MuesliTheme.surfacePrimary : MuesliTheme.accent)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.isMeetingRecording)
+            .help("Start a quick meeting note")
+            .fixedSize()
+
             sortButton
             dateFilterButton
 
@@ -525,6 +554,71 @@ struct MeetingsView: View {
             .fixedSize()
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private func activeMeetingBanner(_ meeting: MeetingRecord) -> some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(meeting.status == .recording ? MuesliTheme.recording : MuesliTheme.accent)
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(meeting.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(meeting.status == .recording ? "Recording now" : "Finalizing notes")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+            }
+
+            Spacer(minLength: MuesliTheme.spacing12)
+
+            Button {
+                controller.showMeetingDocument(id: meeting.id)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Open Notes")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 8)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            .buttonStyle(.plain)
+
+            if meeting.status == .recording {
+                Button {
+                    controller.stopMeetingRecording()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Stop Recording")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, MuesliTheme.spacing12)
+                    .padding(.vertical, 8)
+                    .background(MuesliTheme.recording)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
     }
 
     @ViewBuilder

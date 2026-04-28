@@ -147,6 +147,116 @@ struct MeetingsNavigationTests {
         #expect(FileManager.default.fileExists(atPath: savedRecordingURL.path) == false)
     }
 
+    @Test("deleteMeeting refuses live meeting rows")
+    func deleteMeetingRefusesLiveRows() throws {
+        let store = try makeStore()
+        let meetingID = try store.createLiveMeeting(
+            title: "Live Quick Note",
+            calendarEventID: nil,
+            startTime: Date()
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        let liveMeeting = try #require(try store.meeting(id: meetingID))
+        #expect(controller.canDeleteMeeting(liveMeeting) == false)
+
+        controller.deleteMeeting(id: meetingID)
+
+        #expect(try store.meeting(id: meetingID) != nil)
+    }
+
+    @Test("cached manual notes are persisted before debounce")
+    func cachedManualNotesPersistImmediately() throws {
+        let store = try makeStore()
+        let meetingID = try store.createLiveMeeting(
+            title: "Live Quick Note",
+            calendarEventID: nil,
+            startTime: Date()
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.cacheMeetingManualNotes(id: meetingID, notes: "Decision before crash")
+
+        let persisted = try #require(try store.meeting(id: meetingID))
+        #expect(persisted.manualNotes == "Decision before crash")
+    }
+
+    @Test("failed manual note persistence retries on later flush")
+    func failedManualNotePersistenceRetriesOnFlush() throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.cacheMeetingManualNotes(id: 1, notes: "Draft survives retry")
+        let meetingID = try store.createLiveMeeting(
+            title: "Live Quick Note",
+            calendarEventID: nil,
+            startTime: Date()
+        )
+        #expect(meetingID == 1)
+
+        controller.flushCachedMeetingManualNotes(id: meetingID, sync: false)
+
+        let stored = try #require(try store.meeting(id: meetingID))
+        #expect(stored.manualNotes == "Draft survives retry")
+    }
+
+    @Test("manual note cache coalesces repeated writes until flush")
+    func cachedManualNotesCoalesceRepeatedWrites() throws {
+        let store = try makeStore()
+        let meetingID = try store.createLiveMeeting(
+            title: "Live Quick Note",
+            calendarEventID: nil,
+            startTime: Date()
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.cacheMeetingManualNotes(id: meetingID, notes: "First durable note")
+        #expect(controller.hasPersistedMeetingManualNotes(id: meetingID, notes: "First durable note"))
+        controller.cacheMeetingManualNotes(id: meetingID, notes: "Second cached note")
+        #expect(!controller.hasPersistedMeetingManualNotes(id: meetingID, notes: "Second cached note"))
+
+        let beforeFlush = try #require(try store.meeting(id: meetingID))
+        #expect(beforeFlush.manualNotes == "First durable note")
+
+        controller.flushCachedMeetingManualNotes(id: meetingID, sync: false)
+        #expect(controller.hasPersistedMeetingManualNotes(id: meetingID, notes: "Second cached note"))
+
+        let afterFlush = try #require(try store.meeting(id: meetingID))
+        #expect(afterFlush.manualNotes == "Second cached note")
+    }
+
     @Test("persistCompletedMeetingResult keeps transcript when recording save fails")
     func persistCompletedMeetingResultPreservesMeetingOnRecordingFailure() async throws {
         let store = try makeStore()
@@ -166,6 +276,7 @@ struct MeetingsNavigationTests {
             .appendingPathExtension("wav")
         let result = MeetingSessionResult(
             title: "Customer Review",
+            originalTitle: "Meeting",
             calendarEventID: nil,
             startTime: Date(),
             endTime: Date().addingTimeInterval(90),
@@ -185,6 +296,139 @@ struct MeetingsNavigationTests {
         #expect(storedMeeting?.title == "Customer Review")
         #expect(storedMeeting?.rawTranscript == "Discussed roadmap and blockers.")
         #expect(storedMeeting?.savedRecordingPath == nil)
+    }
+
+    @Test("persistCompletedMeetingResult preserves user-edited live meeting title")
+    func persistCompletedMeetingResultPreservesEditedLiveTitle() async throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        let start = Date()
+        let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
+        try store.updateMeetingTitle(id: liveID, title: "Investor Follow-up")
+
+        let result = MeetingSessionResult(
+            title: "Generated Summary Title",
+            originalTitle: "Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(120),
+            durationSeconds: 120,
+            rawTranscript: "Discussed fundraising updates.",
+            formattedNotes: "## Summary\nFundraising updates discussed.",
+            retainedRecordingURL: nil,
+            retainedRecordingError: nil,
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot
+        )
+
+        _ = try controller.persistCompletedMeetingResult(result, existingMeetingID: liveID)
+
+        let storedMeeting = try #require(try store.meeting(id: liveID))
+        #expect(storedMeeting.title == "Investor Follow-up")
+        #expect(storedMeeting.formattedNotes == "## Summary\nFundraising updates discussed.")
+    }
+
+    @Test("persistCompletedMeetingResult preserves cached live title before debounce")
+    func persistCompletedMeetingResultPreservesCachedLiveTitle() async throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        let start = Date()
+        let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
+        controller.cacheMeetingTitle(id: liveID, title: "Status Bar Stop Title")
+
+        let result = MeetingSessionResult(
+            title: "Generated Summary Title",
+            originalTitle: "Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(120),
+            durationSeconds: 120,
+            rawTranscript: "Discussed follow-up items.",
+            formattedNotes: "## Summary\nFollow-up items discussed.",
+            retainedRecordingURL: nil,
+            retainedRecordingError: nil,
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot
+        )
+
+        _ = try controller.persistCompletedMeetingResult(result, existingMeetingID: liveID)
+
+        let storedMeeting = try #require(try store.meeting(id: liveID))
+        #expect(storedMeeting.title == "Status Bar Stop Title")
+        #expect(storedMeeting.formattedNotes == "## Summary\nFollow-up items discussed.")
+    }
+
+    @Test("resummary context strips appended written notes section")
+    func resummaryContextStripsWrittenNotesSection() {
+        let meeting = makeMeeting(
+            id: 909,
+            title: "Resummarize",
+            formattedNotes: "## Summary\n- Decision captured\n\n### Written notes\n\n- User typed this",
+            status: .completed,
+            manualNotes: "- User typed this"
+        )
+
+        let context = MuesliController.notesContextForResummary(meeting)
+
+        #expect(context == "## Summary\n- Decision captured")
+    }
+
+    @Test("startup recovery preserves stale live meetings with notes")
+    func startupRecoveryPreservesStaleLiveMeetingWithNotes() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Crashed Draft", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: id, manualNotes: "Important draft")
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.recoverStaleLiveMeetings()
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .failed)
+        #expect(meeting.manualNotes == "Important draft")
+    }
+
+    @Test("startup recovery marks empty stale live drafts as failed")
+    func startupRecoveryMarksEmptyStaleLiveDraftsFailed() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Empty Draft", calendarEventID: nil, startTime: Date())
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.recoverStaleLiveMeetings()
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .failed)
     }
 
     @Test("showMeetingTemplatesManager preserves current meetings context and presents manager")
@@ -237,19 +481,27 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.config.meetingTranscriptionModel == BackendOption.whisperLargeTurbo.model)
     }
 
-    private func makeMeeting(id: Int64, title: String) -> MeetingRecord {
+    private func makeMeeting(
+        id: Int64,
+        title: String,
+        formattedNotes: String = "## Summary",
+        status: MeetingStatus = .completed,
+        manualNotes: String = ""
+    ) -> MeetingRecord {
         MeetingRecord(
             id: id,
             title: title,
             startTime: "2026-03-24 10:00",
             durationSeconds: 1800,
             rawTranscript: "Transcript",
-            formattedNotes: "## Summary",
+            formattedNotes: formattedNotes,
             wordCount: 42,
             folderID: nil,
             calendarEventID: nil,
             micAudioPath: nil,
             systemAudioPath: nil,
+            status: status,
+            manualNotes: manualNotes,
             selectedTemplateID: MeetingTemplates.autoID,
             selectedTemplateName: "Auto",
             selectedTemplateKind: .auto,

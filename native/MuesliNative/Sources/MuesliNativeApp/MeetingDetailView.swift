@@ -6,6 +6,18 @@ private enum MeetingDocumentMode: Hashable {
     case transcript
 }
 
+private enum ManualNotesSaveStatus {
+    case saved
+    case saving
+
+    var label: String {
+        switch self {
+        case .saved: return "Saved"
+        case .saving: return "Saving..."
+        }
+    }
+}
+
 struct MeetingDetailView: View {
     let meeting: MeetingRecord?
     let controller: MuesliController
@@ -16,10 +28,15 @@ struct MeetingDetailView: View {
     @State private var isEditingNotes = false
     @State private var editableTitle: String
     @State private var editableNotes: String
+    @State private var editableManualNotes: String
+    @State private var loadedMeetingID: Int64?
+    @State private var manualNotesSaveStatus: ManualNotesSaveStatus = .saved
+    @State private var manualEditorCommand: MarkdownEditorCommand?
     @State private var pendingTemplateID: String
     @State private var documentMode: MeetingDocumentMode
     @State private var titleSaveTask: DispatchWorkItem?
     @State private var notesSaveTask: DispatchWorkItem?
+    @State private var manualNotesSaveStatusTask: DispatchWorkItem?
     @State private var summaryErrorMessage: String?
     @State private var showDeleteConfirmation = false
 
@@ -38,6 +55,8 @@ struct MeetingDetailView: View {
         let initialTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         _editableTitle = State(initialValue: meeting?.title ?? "")
         _editableNotes = State(initialValue: meeting.map { Self.notesContent(for: $0) } ?? "")
+        _editableManualNotes = State(initialValue: meeting?.manualNotes ?? "")
+        _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
         _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
     }
@@ -56,6 +75,12 @@ struct MeetingDetailView: View {
                 .background(MuesliTheme.backgroundBase)
                 .onChange(of: meeting.id) { _, _ in
                     syncLocalState(with: meeting)
+                }
+                .onChange(of: meeting.status) { _, _ in
+                    syncLocalState(with: meeting)
+                }
+                .onChange(of: meeting.manualNotes) { _, _ in
+                    syncManualNotesState(with: meeting)
                 }
                 .onChange(of: appState.config.customMeetingTemplates) { _, _ in
                     syncPendingTemplateSelectionIfNeeded(for: meeting)
@@ -133,33 +158,49 @@ struct MeetingDetailView: View {
                 Spacer(minLength: MuesliTheme.spacing16)
 
                 VStack(alignment: .trailing, spacing: 10) {
-                    documentModePicker
-
-                    ViewThatFits(in: .horizontal) {
+                    if showsManualNotesEditor(for: meeting) {
                         HStack(spacing: MuesliTheme.spacing8) {
-                            templateMenu(for: meeting, appliedTemplate: appliedTemplate)
-                            recordingAction(for: meeting)
-                            summaryAction(for: meeting)
-                            editButton(for: meeting)
-                            deleteButton
+                            statusChip(for: meeting)
+                            if meeting.status == .recording {
+                                stopRecordingButton
+                                discardRecordingButton
+                            } else if controller.canDeleteMeeting(meeting), meeting.status == .noteOnly || meeting.status == .failed {
+                                deleteButton
+                            }
                         }
+                    } else {
+                        documentModePicker
 
-                        VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                        ViewThatFits(in: .horizontal) {
                             HStack(spacing: MuesliTheme.spacing8) {
                                 templateMenu(for: meeting, appliedTemplate: appliedTemplate)
                                 recordingAction(for: meeting)
                                 summaryAction(for: meeting)
-                            }
-                            HStack(spacing: MuesliTheme.spacing8) {
                                 editButton(for: meeting)
-                                deleteButton
+                                if controller.canDeleteMeeting(meeting) {
+                                    deleteButton
+                                }
+                            }
+
+                            VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                                HStack(spacing: MuesliTheme.spacing8) {
+                                    templateMenu(for: meeting, appliedTemplate: appliedTemplate)
+                                    recordingAction(for: meeting)
+                                    summaryAction(for: meeting)
+                                }
+                                HStack(spacing: MuesliTheme.spacing8) {
+                                    editButton(for: meeting)
+                                    if controller.canDeleteMeeting(meeting) {
+                                        deleteButton
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            if isRawTranscript(meeting) && documentMode == .notes {
+            if !showsManualNotesEditor(for: meeting), isRawTranscript(meeting), documentMode == .notes {
                 transcriptCTA
             }
         }
@@ -171,7 +212,35 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func content(for meeting: MeetingRecord) -> some View {
-        if isEditingNotes {
+        if showsManualNotesEditor(for: meeting) {
+            let isManualNotesEditable = canEditManualNotes(for: meeting)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                manualNotesToolbar(for: meeting)
+                    .disabled(!isManualNotesEditable)
+
+                MarkdownRichTextEditor(
+                    text: $editableManualNotes,
+                    command: $manualEditorCommand,
+                    shouldFocus: isManualNotesEditable && meeting.status == .recording,
+                    isEditable: isManualNotesEditable,
+                    onTextChange: { notes in
+                        guard isManualNotesEditable else { return }
+                        saveManualNotes(meetingID: meeting.id, notes: notes)
+                    }
+                )
+                .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
+                .background(MuesliTheme.backgroundBase)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .padding(.horizontal, 40)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } else if isEditingNotes {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
@@ -222,6 +291,19 @@ struct MeetingDetailView: View {
         .tint(MuesliTheme.accent)
         .frame(width: 220)
         .disabled(isEditingNotes)
+    }
+
+    private func showsManualNotesEditor(for meeting: MeetingRecord) -> Bool {
+        switch meeting.status {
+        case .recording, .processing, .noteOnly, .failed:
+            return true
+        case .completed:
+            return false
+        }
+    }
+
+    private func canEditManualNotes(for meeting: MeetingRecord) -> Bool {
+        meeting.status == .recording || meeting.status == .noteOnly || meeting.status == .failed
     }
 
     @ViewBuilder
@@ -393,6 +475,71 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
+    private func manualNotesToolbar(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            if canEditManualNotes(for: meeting) {
+                Text(manualNotesSaveStatus.label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
+            Spacer()
+
+            markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .heading)
+            }
+            markdownToolbarButton(systemImage: "bold", label: "Bold") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .bold)
+            }
+            markdownToolbarButton(systemImage: "list.bullet", label: "Bullet") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .bullet)
+            }
+            markdownToolbarButton(systemImage: "checklist", label: "Checkbox") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .checkbox)
+            }
+        }
+        .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func statusChip(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(meeting.status.displayColor)
+                .frame(width: 7, height: 7)
+            Text(meeting.status.displayLabel)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .padding(.horizontal, MuesliTheme.spacing8)
+        .padding(.vertical, 6)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func markdownToolbarButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .frame(width: 34, height: 30)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(label)
+    }
+
+    @ViewBuilder
     private func exportMenu(for meeting: MeetingRecord) -> some View {
         let currentContent: MeetingExportContent = documentMode == .transcript ? .transcript : .notes
         let currentLabel = documentMode == .transcript ? "Export Transcript" : "Export Notes"
@@ -464,6 +611,35 @@ struct MeetingDetailView: View {
     private var deleteButton: some View {
         iconButton("trash", label: "Delete") {
             showDeleteConfirmation = true
+        }
+    }
+
+    private var stopRecordingButton: some View {
+        Button {
+            if let meeting {
+                flushTitleSave(meetingID: meeting.id)
+            }
+            controller.stopMeetingRecording()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Stop Recording")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, 8)
+            .background(MuesliTheme.recording)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        }
+        .buttonStyle(.plain)
+        .help("Stop recording")
+    }
+
+    private var discardRecordingButton: some View {
+        iconButton("xmark", label: "Discard") {
+            controller.discardMeetingRecording()
         }
     }
 
@@ -578,6 +754,9 @@ struct MeetingDetailView: View {
     }
 
     static func notesContent(for meeting: MeetingRecord) -> String {
+        if meeting.status == .noteOnly {
+            return meeting.manualNotes
+        }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
@@ -585,16 +764,28 @@ struct MeetingDetailView: View {
     }
 
     private static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
-        meeting.notesState == .structuredNotes ? .notes : .transcript
+        if meeting.status == .noteOnly || meeting.status == .recording || meeting.status == .processing || meeting.status == .failed {
+            return .notes
+        }
+        return meeting.notesState == .structuredNotes
+            ? MeetingDocumentMode.notes
+            : MeetingDocumentMode.transcript
     }
 
     private func debounceSaveTitle(meetingID: Int64) {
         titleSaveTask?.cancel()
         let title = editableTitle
         let c = controller
+        c.cacheMeetingTitle(id: meetingID, title: title)
         let item = DispatchWorkItem { c.updateMeetingTitle(id: meetingID, title: title) }
         titleSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private func flushTitleSave(meetingID: Int64) {
+        titleSaveTask?.cancel()
+        titleSaveTask = nil
+        controller.updateMeetingTitle(id: meetingID, title: editableTitle)
     }
 
     private func debounceSaveNotes(meetingID: Int64) {
@@ -604,6 +795,25 @@ struct MeetingDetailView: View {
         let item = DispatchWorkItem { c.updateMeetingNotes(id: meetingID, notes: notes) }
         notesSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private func saveManualNotes(meetingID: Int64, notes: String) {
+        manualNotesSaveStatus = .saving
+        controller.cacheMeetingManualNotes(id: meetingID, notes: notes)
+        scheduleManualNotesSaveStatusCheck(meetingID: meetingID, notes: notes)
+    }
+
+    private func scheduleManualNotesSaveStatusCheck(meetingID: Int64, notes: String) {
+        manualNotesSaveStatusTask?.cancel()
+        let item = DispatchWorkItem {
+            guard loadedMeetingID == meetingID else { return }
+            guard editableManualNotes == notes else { return }
+            if controller.hasPersistedMeetingManualNotes(id: meetingID, notes: notes) {
+                manualNotesSaveStatus = .saved
+            }
+        }
+        manualNotesSaveStatusTask = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: item)
     }
 
     private var summaryErrorBinding: Binding<Bool> {
@@ -642,10 +852,27 @@ struct MeetingDetailView: View {
     }
 
     private func syncLocalState(with meeting: MeetingRecord?) {
+        let previousMeetingID = loadedMeetingID
+        loadedMeetingID = meeting?.id
         editableTitle = meeting?.title ?? ""
         editableNotes = meeting.map { Self.notesContent(for: $0) } ?? ""
+        if previousMeetingID != meeting?.id {
+            editableManualNotes = meeting?.manualNotes ?? ""
+            manualNotesSaveStatus = .saved
+        } else {
+            syncManualNotesState(with: meeting)
+        }
         pendingTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
+    }
+
+    private func syncManualNotesState(with meeting: MeetingRecord?) {
+        let persistedManualNotes = meeting?.manualNotes ?? ""
+        if manualNotesSaveStatus == .saving, editableManualNotes != persistedManualNotes {
+            return
+        }
+        editableManualNotes = persistedManualNotes
+        manualNotesSaveStatus = .saved
     }
 
     private func formatMeta(_ meeting: MeetingRecord) -> String {

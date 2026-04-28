@@ -76,6 +76,8 @@ struct DictationStoreTests {
         #expect(inserted?.selectedTemplateID == "one-to-one")
         #expect(inserted?.selectedTemplateKind == .builtin)
         #expect(inserted?.savedRecordingPath == nil)
+        #expect(inserted?.status == .completed)
+        #expect(inserted?.manualNotes == "")
     }
 
     @Test("migration adds saved recording path column to legacy meeting schema")
@@ -99,6 +101,160 @@ struct DictationStoreTests {
 
         let inserted = try store.recentMeetings(limit: 1).first
         #expect(inserted?.savedRecordingPath == "/tmp/meeting.wav")
+    }
+
+    @Test("live meeting starts as recording with empty manual notes")
+    func createLiveMeeting() throws {
+        let store = try makeStore()
+        let start = Date()
+
+        let id = try store.createLiveMeeting(
+            title: "Quick Note",
+            calendarEventID: nil,
+            startTime: start,
+            selectedTemplateID: "auto",
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: "## Summary"
+        )
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.title == "Quick Note")
+        #expect(meeting.status == .recording)
+        #expect(meeting.manualNotes == "")
+        #expect(meeting.rawTranscript == "")
+        #expect(meeting.formattedNotes == "")
+        #expect(meeting.selectedTemplateID == "auto")
+    }
+
+    @Test("manual notes update independently from final notes")
+    func updateManualNotes() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Quick Note", calendarEventID: nil, startTime: Date())
+
+        try store.updateMeetingManualNotes(id: id, manualNotes: "- Decision: ship today")
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.manualNotes == "- Decision: ship today")
+        #expect(meeting.formattedNotes == "")
+    }
+
+    @Test("manual notes update fails when the meeting row is missing")
+    func updateManualNotesFailsWhenMeetingMissing() throws {
+        let store = try makeStore()
+
+        #expect(throws: Error.self) {
+            try store.updateMeetingManualNotes(id: 9_999, manualNotes: "Lost note")
+        }
+    }
+
+    @Test("status update fails when the meeting row is missing")
+    func updateMeetingStatusFailsWhenMeetingMissing() throws {
+        let store = try makeStore()
+
+        #expect(throws: Error.self) {
+            try store.updateMeetingStatus(id: 9_999, status: .failed)
+        }
+    }
+
+    @Test("live meeting completes the same row")
+    func completeLiveMeetingUpdatesExistingRow() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.createLiveMeeting(title: "Draft", calendarEventID: nil, startTime: start)
+        try store.updateMeetingManualNotes(id: id, manualNotes: "- Keep this")
+
+        try store.completeLiveMeeting(
+            id: id,
+            title: "Generated Title",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(120),
+            rawTranscript: "hello world",
+            formattedNotes: "## Summary\nHello\n\n## Manual Notes\n\n- Keep this",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: nil,
+            selectedTemplateID: "auto",
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: "## Summary"
+        )
+
+        let meetings = try store.recentMeetings(limit: 10)
+        #expect(meetings.count == 1)
+        let completed = try #require(meetings.first)
+        #expect(completed.id == id)
+        #expect(completed.status == .completed)
+        #expect(completed.title == "Generated Title")
+        #expect(completed.rawTranscript == "hello world")
+        #expect(completed.wordCount == 5)
+        #expect(completed.manualNotes == "- Keep this")
+    }
+
+    @Test("note-only status updates word count from manual notes")
+    func noteOnlyStatusCountsManualNotes() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Manual Draft", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: id, manualNotes: "Decision ship today")
+
+        try store.updateMeetingStatus(id: id, status: .noteOnly)
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .noteOnly)
+        #expect(meeting.wordCount == 3)
+    }
+
+    @Test("live meeting completion fails when the row disappeared")
+    func completeLiveMeetingFailsWhenRowMissing() throws {
+        let store = try makeStore()
+        let start = Date()
+
+        #expect(throws: Error.self) {
+            try store.completeLiveMeeting(
+                id: 9_999,
+                title: "Generated Title",
+                calendarEventID: nil,
+                startTime: start,
+                endTime: start.addingTimeInterval(120),
+                rawTranscript: "hello world",
+                formattedNotes: "## Summary\nHello",
+                micAudioPath: nil,
+                systemAudioPath: nil,
+                savedRecordingPath: nil,
+                selectedTemplateID: "auto",
+                selectedTemplateName: "Auto",
+                selectedTemplateKind: .auto,
+                selectedTemplatePrompt: "## Summary"
+            )
+        }
+    }
+
+    @Test("staleLiveMeetings returns only recording and processing rows")
+    func staleLiveMeetingsFiltersLiveStatuses() throws {
+        let store = try makeStore()
+        let start = Date()
+
+        let recordingID = try store.createLiveMeeting(title: "Recording", calendarEventID: nil, startTime: start)
+        let processingID = try store.createLiveMeeting(title: "Processing", calendarEventID: nil, startTime: start.addingTimeInterval(1))
+        let noteOnlyID = try store.createLiveMeeting(title: "Note Only", calendarEventID: nil, startTime: start.addingTimeInterval(2))
+        try store.updateMeetingStatus(id: processingID, status: .processing)
+        try store.updateMeetingStatus(id: noteOnlyID, status: .noteOnly)
+        try store.insertMeeting(
+            title: "Completed",
+            calendarEventID: nil,
+            startTime: start.addingTimeInterval(3),
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "done",
+            formattedNotes: "## Summary\nDone",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let stale = try store.staleLiveMeetings()
+
+        #expect(stale.map(\.id) == [processingID, recordingID])
+        #expect(stale.allSatisfy { $0.status == .recording || $0.status == .processing })
     }
 
     @Test("insert and retrieve dictation")
@@ -390,10 +546,23 @@ struct DictationStoreTests {
             rawTranscript: "This is a test transcript with several words",
             formattedNotes: "", micAudioPath: nil, systemAudioPath: nil
         )
+        let liveID = try store.createLiveMeeting(
+            title: "Live Draft",
+            calendarEventID: nil,
+            startTime: start.addingTimeInterval(60)
+        )
+        let noteOnlyID = try store.createLiveMeeting(
+            title: "Written Notes",
+            calendarEventID: nil,
+            startTime: start.addingTimeInterval(120)
+        )
+        try store.updateMeetingManualNotes(id: noteOnlyID, manualNotes: "manual note words")
+        try store.updateMeetingStatus(id: noteOnlyID, status: .noteOnly)
+        try store.updateMeetingStatus(id: liveID, status: .failed)
 
         let stats = try store.meetingStats()
-        #expect(stats.totalMeetings == 1)
-        #expect(stats.totalWords == 8)
+        #expect(stats.totalMeetings == 2)
+        #expect(stats.totalWords == 11)
     }
 
     @Test("clear dictations removes all records")
@@ -729,6 +898,17 @@ struct DictationStoreTests {
 
         let byNotes = try store.searchMeetings(query: "Prioritized")
         #expect(byNotes.count == 1)
+    }
+
+    @Test("searchMeetings matches manual notes")
+    func searchMeetingsManualNotes() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Quick Note", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: id, manualNotes: "Escalate renewal risk")
+
+        let results = try store.searchMeetings(query: "renewal")
+
+        #expect(results.map(\.id).contains(id))
     }
 
     @Test("search is case-insensitive for ASCII")

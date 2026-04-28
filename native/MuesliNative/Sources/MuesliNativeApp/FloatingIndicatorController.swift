@@ -72,7 +72,7 @@ private final class HoverIndicatorView: NSView {
 }
 
 @MainActor
-final class FloatingIndicatorController {
+final class FloatingIndicatorController: NSObject {
     private var panel: NSPanel?
     private var contentView: HoverIndicatorView?
     private var iconLabel: NSTextField?
@@ -104,6 +104,7 @@ final class FloatingIndicatorController {
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
+        super.init()
     }
 
     var onStopToggleDictation: (() -> Void)?
@@ -154,6 +155,7 @@ final class FloatingIndicatorController {
         contentView.layer?.cornerRadius = targetFrame.height / 2
         contentView.layer?.backgroundColor = style.background.cgColor
         contentView.layer?.borderColor = style.border.cgColor
+        glassView?.frame = NSRect(origin: .zero, size: targetFrame.size)
         panel.alphaValue = style.alpha
 
         iconLabel.stringValue = style.icon
@@ -417,8 +419,7 @@ final class FloatingIndicatorController {
         glassView?.isHidden = false
         tintLayer?.isHidden = false
         tintLayer?.backgroundColor = NSColor.colorWith(hexString: "1e1e2e", alpha: 0.72).cgColor
-        tintLayer?.frame = CGRect(origin: .zero, size: loadingSize)
-        tintLayer?.cornerRadius = loadingSize.height / 2
+        applyTintLayerGeometry(size: loadingSize, radius: loadingSize.height / 2)
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
@@ -566,27 +567,34 @@ final class FloatingIndicatorController {
 
     private func startWaveformAnimation() {
         amplitudeTimer?.invalidate()
+        amplitudeTimer = Timer.scheduledTimer(
+            timeInterval: 1.0 / 30.0,
+            target: self,
+            selector: #selector(waveformTimerFired(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func waveformTimerFired(_ timer: Timer) {
+        guard let contentView else { return }
         let multipliers: [CGFloat] = [0.6, 0.85, 1.0, 0.85, 0.6]
         let minHeight: CGFloat = 3
         let maxHeight: CGFloat = 14
+        let dB = CGFloat(powerProvider?() ?? -160)
+        let raw = max(0, min(1, (dB + 50) / 50))
+        smoothedAmplitude = 0.35 * raw + 0.65 * smoothedAmplitude
+        let pillHeight = contentView.frame.height
 
-        amplitudeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            guard let self, let contentView = self.contentView else { return }
-            let dB = CGFloat(self.powerProvider?() ?? -160)
-            let raw = max(0, min(1, (dB + 50) / 50))
-            self.smoothedAmplitude = 0.35 * raw + 0.65 * self.smoothedAmplitude
-            let pillHeight = contentView.frame.height
-
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            for (i, bar) in self.barLayers.enumerated() {
-                let m = i < multipliers.count ? multipliers[i] : 1.0
-                let h = minHeight + (maxHeight - minHeight) * self.smoothedAmplitude * m
-                bar.frame.size.height = h
-                bar.frame.origin.y = (pillHeight - h) / 2
-            }
-            CATransaction.commit()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (i, bar) in barLayers.enumerated() {
+            let m = i < multipliers.count ? multipliers[i] : 1.0
+            let h = minHeight + (maxHeight - minHeight) * smoothedAmplitude * m
+            bar.frame.size.height = h
+            bar.frame.origin.y = (pillHeight - h) / 2
         }
+        CATransaction.commit()
     }
 
     private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
@@ -597,7 +605,9 @@ final class FloatingIndicatorController {
         // During recording, hide frost and show solid accent. Otherwise frosted glass.
         let isRecording = (state == .recording)
         glassView?.isHidden = isRecording
+        glassView?.frame = NSRect(origin: .zero, size: frameSize)
         glassView?.layer?.cornerRadius = radius
+        glassView?.layer?.masksToBounds = true
 
         let tintAlpha: CGFloat
         let tintHex: String
@@ -617,8 +627,7 @@ final class FloatingIndicatorController {
         }
         tintLayer?.isHidden = false
         tintLayer?.backgroundColor = NSColor.colorWith(hexString: tintHex, alpha: tintAlpha).cgColor
-        tintLayer?.frame = CGRect(origin: .zero, size: frameSize)
-        tintLayer?.cornerRadius = radius
+        applyTintLayerGeometry(size: frameSize, radius: radius)
 
         let iconSize = NSSize(width: 18, height: 18)
 
@@ -740,8 +749,11 @@ final class FloatingIndicatorController {
         // dark glass presence rather than showing everything underneath.
         let tint = CALayer()
         tint.backgroundColor = NSColor.colorWith(hex: 0x1e1e2e, alpha: 0.44).cgColor
+        tint.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        tint.masksToBounds = false
+        tint.cornerCurve = .continuous
         tint.isHidden = true
-        contentView.layer?.addSublayer(tint)
+        contentView.layer?.insertSublayer(tint, at: 0)
         tintLayer = tint
 
         // Idle icon — uses the user's selected menu bar icon from config.
@@ -769,6 +781,15 @@ final class FloatingIndicatorController {
         contentView.addSubview(wandView)
         wandIconView = wandView
 
+    }
+
+    private func applyTintLayerGeometry(size: NSSize, radius: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tintLayer?.frame = CGRect(origin: .zero, size: size)
+        tintLayer?.cornerRadius = radius
+        tintLayer?.cornerCurve = .continuous
+        CATransaction.commit()
     }
 
     static func defaultIndicatorCenter(in visibleFrame: NSRect, idleSize: NSSize = NSSize(width: 44, height: 28)) -> CGPoint {

@@ -2,6 +2,24 @@ import Foundation
 import MuesliCore
 import os
 
+enum MeetingSummaryError: LocalizedError {
+    case backendFailed(backend: String, statusCode: Int?, message: String)
+    case emptyResponse(backend: String)
+    case requestFailed(backend: String, underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case let .backendFailed(backend, statusCode, message):
+            let statusText = statusCode.map { " Status \($0)." } ?? ""
+            return "\(backend) could not generate meeting notes.\(statusText) \(message) The selected model may be unavailable or retired."
+        case let .emptyResponse(backend):
+            return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible."
+        case let .requestFailed(backend, underlying):
+            return "\(backend) could not be reached while generating meeting notes. \(underlying.localizedDescription)"
+        }
+    }
+}
+
 enum MeetingSummaryClient {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSummary")
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
@@ -31,55 +49,89 @@ enum MeetingSummaryClient {
         config: AppConfig,
         template: MeetingTemplateSnapshot = MeetingTemplates.auto.snapshot,
         existingNotes: String? = nil,
+        manualNotesToRetain: String? = nil,
         visualContext: String? = nil
-    ) async -> String {
+    ) async throws -> String {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.openAI.backend : config.meetingSummaryBackend).lowercased()
+        let generatedNotes: String
         if backend == MeetingSummaryBackendOption.chatGPT.backend {
-            return await summarizeWithChatGPT(
+            generatedNotes = try await summarizeWithChatGPT(
                 transcript: transcript,
                 meetingTitle: meetingTitle,
                 existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
                 config: config,
                 template: template,
                 visualContext: visualContext
             )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
         if backend == MeetingSummaryBackendOption.openRouter.backend {
-            return await summarizeWithOpenRouter(
+            generatedNotes = try await summarizeWithOpenRouter(
                 transcript: transcript,
                 meetingTitle: meetingTitle,
                 existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
                 config: config,
                 template: template,
                 visualContext: visualContext
             )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
-        return await summarizeWithOpenAI(
+        generatedNotes = try await summarizeWithOpenAI(
             transcript: transcript,
             meetingTitle: meetingTitle,
             existingNotes: existingNotes,
+            manualNotes: manualNotesToRetain,
             config: config,
             template: template,
             visualContext: visualContext
         )
+        return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
     }
 
-    static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil) -> String {
+    static func summaryFailureNotes(transcript: String, meetingTitle: String, error: Error, manualNotes: String? = nil) -> String {
+        let trimmedTitle = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var sections = ["## Summary failed"]
+        if !trimmedTitle.isEmpty {
+            sections.append("Meeting: \(trimmedTitle)")
+        }
+        sections.append("Muesli could not generate structured meeting notes.\n\n\(error.localizedDescription)")
+        if !trimmedManualNotes.isEmpty {
+            sections.append("### Written notes\n\n\(trimmedManualNotes)")
+        }
+        sections.append("## Raw Transcript\n\n\(transcript)")
+        return sections.joined(separator: "\n\n")
+    }
+
+    static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil, manualNotes: String? = nil) -> String {
         let notePreservationInstructions: String
+        let hasManualNotes = !(manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         if let existingNotes,
            !existingNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            notePreservationInstructions = "\n\nCurrent notes may also be provided. Preserve any concrete user-added details, clarifications, and edits from those notes when they do not conflict with the transcript. Reformat that information into the requested template instead of discarding it."
+            notePreservationInstructions = "\n\nCurrent generated notes may also be provided. Preserve useful concrete details from those notes when they do not conflict with the transcript."
         } else {
             notePreservationInstructions = ""
         }
+        let manualNoteInstructions = hasManualNotes
+            ? "\n\nProtected written notes may also be provided. These are notes the user typed by hand during the meeting. Use them as high-priority context. Place each written note near the most relevant section of the summary, preserving the user's wording verbatim when possible. Do not rewrite, polish, summarize away, or omit concrete user-written notes. Avoid creating a large standalone Manual Notes appendix unless there is no relevant section for a note."
+            : ""
 
         return baseSummaryInstructions
             + notePreservationInstructions
+            + manualNoteInstructions
             + "\n\nFollow this note template exactly:\n\n"
             + template.prompt
     }
 
-    static func summaryUserPrompt(transcript: String, meetingTitle: String, existingNotes: String? = nil, visualContext: String? = nil) -> String {
+    static func summaryUserPrompt(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String? = nil,
+        manualNotes: String? = nil,
+        visualContext: String? = nil
+    ) -> String {
         var prompt = "Meeting title: \(meetingTitle)\n\n"
         let visualContextCharCount = visualContext?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
         logger.info("summary prompt visualContextIncluded=\(visualContextCharCount > 0) visualContextChars=\(visualContextCharCount)")
@@ -91,31 +143,132 @@ enum MeetingSummaryClient {
 
         let trimmedNotes = existingNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedNotes.isEmpty {
-            prompt += "Current notes to preserve and reformat:\n\(trimmedNotes)\n\n"
+            prompt += "Current generated notes to preserve and reformat:\n\(trimmedNotes)\n\n"
+        }
+
+        let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedManualNotes.isEmpty {
+            prompt += "Protected written notes typed by the user during the meeting. Preserve these verbatim and place them where they belong in the summary:\n\(trimmedManualNotes)\n\n"
         }
 
         prompt += "Raw transcript:\n\(transcript)"
         return prompt
     }
 
+    static func notesByRetainingManualNotes(generatedNotes: String, manualNotes: String?) -> String {
+        let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedManualNotes.isEmpty else { return generatedNotes }
+
+        let trimmedGeneratedNotes = generatedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let missingNotes = manualNoteBlocks(from: trimmedManualNotes).filter { note in
+            !generatedNotesContainManualNote(trimmedGeneratedNotes, note: note)
+        }
+        guard !missingNotes.isEmpty else {
+            return trimmedGeneratedNotes
+        }
+        let manualSection = "### Written notes\n\n\(missingNotes.joined(separator: "\n"))"
+        if trimmedGeneratedNotes.isEmpty {
+            return manualSection
+        }
+        return "\(trimmedGeneratedNotes)\n\n\(manualSection)"
+    }
+
+    static func manualNoteBlocks(from notes: String) -> [String] {
+        let normalized = notes
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return [] }
+
+        let lines = normalized.components(separatedBy: .newlines)
+        let nonEmptyLines = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let listLines = nonEmptyLines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("- ")
+                || trimmed.hasPrefix("* ")
+                || trimmed.hasPrefix("• ")
+                || trimmed.hasPrefix("- [ ] ")
+                || trimmed.hasPrefix("- [x] ")
+                || trimmed.hasPrefix("- [X] ")
+                || isNumberedListLine(trimmed)
+        }
+        if !listLines.isEmpty, listLines.count == nonEmptyLines.count {
+            return listLines.map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        return [normalized]
+    }
+
+    private static func generatedNotesContainManualNote(_ generatedNotes: String, note: String) -> Bool {
+        let normalizedNote = normalizedManualNoteMatchText(note)
+        guard !normalizedNote.isEmpty else { return true }
+        let generatedLines = generatedNotes
+            .components(separatedBy: .newlines)
+            .map(normalizedManualNoteMatchText)
+        if generatedLines.contains(normalizedNote) {
+            return true
+        }
+        return normalizedNote.count >= 40
+            && normalizedManualNoteMatchText(generatedNotes).contains(normalizedNote)
+    }
+
+    private static func normalizedManualNoteMatchText(_ text: String) -> String {
+        normalizedManualNoteContent(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    private static func normalizedManualNoteContent(_ text: String) -> String {
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = [
+            "- [ ] ", "- [x] ", "- [X] ",
+            "* [ ] ", "* [x] ", "* [X] ",
+            "• [ ] ", "• [x] ", "• [X] ",
+            "- ", "* ", "• "
+        ]
+        if let prefix = prefixes.first(where: { trimmed.hasPrefix($0) }) {
+            trimmed.removeFirst(prefix.count)
+            return trimmed
+        }
+
+        if let match = trimmed.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) {
+            trimmed.removeSubrange(match)
+        }
+        return trimmed
+    }
+
+    private static func isNumberedListLine(_ line: String) -> Bool {
+        var sawDigit = false
+        var index = line.startIndex
+        while index < line.endIndex, line[index].isNumber {
+            sawDigit = true
+            index = line.index(after: index)
+        }
+        guard sawDigit, index < line.endIndex, line[index] == "." || line[index] == ")" else { return false }
+        let next = line.index(after: index)
+        return next < line.endIndex && line[next].isWhitespace
+    }
+
     private static func summarizeWithOpenAI(
         transcript: String,
         meetingTitle: String,
         existingNotes: String?,
+        manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
         visualContext: String? = nil
-    ) async -> String {
+    ) async throws -> String {
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
         guard !apiKey.isEmpty else {
             return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
         }
 
-        let instructions = summaryInstructions(for: template, existingNotes: existingNotes)
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
         let userPrompt = summaryUserPrompt(
             transcript: transcript,
             meetingTitle: meetingTitle,
             existingNotes: existingNotes,
+            manualNotes: manualNotes,
             visualContext: visualContext
         )
         let body: [String: Any] = [
@@ -136,17 +289,21 @@ enum MeetingSummaryClient {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateHTTPResponse(response, data: data, backend: "OpenAI")
             guard
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let text = extractOpenAIText(from: json),
                 !text.isEmpty
             else {
-                return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+                if let message = extractErrorMessage(from: data) {
+                    throw MeetingSummaryError.backendFailed(backend: "OpenAI", statusCode: nil, message: message)
+                }
+                throw MeetingSummaryError.emptyResponse(backend: "OpenAI")
             }
             return text
         } catch {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw summaryRequestError(backend: "OpenAI", error: error)
         }
     }
 
@@ -154,21 +311,24 @@ enum MeetingSummaryClient {
         transcript: String,
         meetingTitle: String,
         existingNotes: String?,
+        manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
         visualContext: String? = nil
-    ) async -> String {
+    ) async throws -> String {
         let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
         guard !apiKey.isEmpty else {
             return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
         }
 
-        let model = config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel
-        let instructions = summaryInstructions(for: template, existingNotes: existingNotes)
+        let configuredModel = config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = configuredModel.isEmpty ? defaultOpenRouterModel : configuredModel
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
         let userPrompt = summaryUserPrompt(
             transcript: transcript,
             meetingTitle: meetingTitle,
             existingNotes: existingNotes,
+            manualNotes: manualNotes,
             visualContext: visualContext
         )
         let body: [String: Any] = [
@@ -188,17 +348,21 @@ enum MeetingSummaryClient {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateHTTPResponse(response, data: data, backend: "OpenRouter")
             guard
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let text = extractOpenRouterText(from: json),
                 !text.isEmpty
             else {
-                return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+                if let message = extractErrorMessage(from: data) {
+                    throw MeetingSummaryError.backendFailed(backend: "OpenRouter", statusCode: nil, message: message)
+                }
+                throw MeetingSummaryError.emptyResponse(backend: "OpenRouter")
             }
             return text
         } catch {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw summaryRequestError(backend: "OpenRouter", error: error)
         }
     }
 
@@ -206,18 +370,20 @@ enum MeetingSummaryClient {
         transcript: String,
         meetingTitle: String,
         existingNotes: String?,
+        manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
         visualContext: String? = nil
-    ) async -> String {
+    ) async throws -> String {
         do {
-            let instructions = summaryInstructions(for: template, existingNotes: existingNotes)
+            let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
             let text = try await callWHAM(
                 systemPrompt: instructions,
                 userPrompt: summaryUserPrompt(
                     transcript: transcript,
                     meetingTitle: meetingTitle,
                     existingNotes: existingNotes,
+                    manualNotes: manualNotes,
                     visualContext: visualContext
                 ),
                 model: config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel
@@ -225,10 +391,10 @@ enum MeetingSummaryClient {
             if let text, !text.isEmpty {
                 return text
             }
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw MeetingSummaryError.emptyResponse(backend: "ChatGPT")
         } catch {
             fputs("[summary] ChatGPT summarization failed: \(error)\n", stderr)
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+            throw summaryRequestError(backend: "ChatGPT", error: error)
         }
     }
 
@@ -268,9 +434,9 @@ enum MeetingSummaryClient {
             // Collect error body
             var errorData = Data()
             for try await byte in bytes { errorData.append(byte) }
-            let errorBody = String(data: errorData, encoding: .utf8) ?? "(unknown)"
-            fputs("[summary] ChatGPT WHAM: HTTP \(httpStatus): \(String(errorBody.prefix(500)))\n", stderr)
-            return nil
+            let message = extractErrorMessage(from: errorData) ?? String(data: errorData, encoding: .utf8) ?? "(unknown)"
+            fputs("[summary] ChatGPT WHAM: HTTP \(httpStatus): \(String(message.prefix(500)))\n", stderr)
+            throw MeetingSummaryError.backendFailed(backend: "ChatGPT", statusCode: httpStatus, message: message)
         }
 
         // Parse SSE stream: collect text deltas from response.output_text.delta events
@@ -314,6 +480,55 @@ enum MeetingSummaryClient {
         return nil
     }
 
+    private static func validateHTTPResponse(_ response: URLResponse, data: Data, backend: String) throws {
+        guard let httpResponse = response as? HTTPURLResponse else { return }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = extractErrorMessage(from: data)
+                ?? String(data: data, encoding: .utf8)
+                ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            throw MeetingSummaryError.backendFailed(
+                backend: backend,
+                statusCode: httpResponse.statusCode,
+                message: String(message.prefix(800))
+            )
+        }
+    }
+
+    private static func extractErrorMessage(from data: Data) -> String? {
+        guard
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        if let error = json["error"] as? [String: Any] {
+            if let message = error["message"] as? String, !message.isEmpty {
+                return message
+            }
+            if let code = error["code"] as? String, !code.isEmpty {
+                return code
+            }
+            return String(describing: error)
+        }
+
+        if let message = json["message"] as? String, !message.isEmpty {
+            return message
+        }
+
+        if let detail = json["detail"] as? String, !detail.isEmpty {
+            return detail
+        }
+
+        return nil
+    }
+
+    private static func summaryRequestError(backend: String, error: Error) -> Error {
+        if error is MeetingSummaryError {
+            return error
+        }
+        return MeetingSummaryError.requestFailed(backend: backend, underlying: error)
+    }
+
     private static func extractOpenRouterText(from payload: [String: Any]) -> String? {
         let choices = payload["choices"] as? [[String: Any]] ?? []
         guard let message = choices.first?["message"] as? [String: Any] else {
@@ -349,7 +564,8 @@ enum MeetingSummaryClient {
         if backend == MeetingSummaryBackendOption.openRouter.backend {
             let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
             guard !apiKey.isEmpty else { return nil }
-            let model = config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel
+            let configuredModel = config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = configuredModel.isEmpty ? defaultOpenRouterModel : configuredModel
             return await callChatCompletions(
                 url: openRouterURL,
                 apiKey: apiKey,
