@@ -282,6 +282,19 @@ if [[ -z "$PUBLIC_ED_KEY" ]]; then
 fi
 echo "Bundle metadata OK."
 
+SPARKLE_FRAMEWORK="$APP_PATH/Contents/MacOS/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "ERROR: app bundle is missing Sparkle.framework" >&2
+  exit 1
+fi
+
+SPARKLE_UPDATER_PATH="$(swift -e 'import Foundation; let bundleURL = URL(fileURLWithPath: CommandLine.arguments[1]); guard let bundle = Bundle(url: bundleURL) else { exit(2) }; print(bundle.url(forAuxiliaryExecutable: "Updater.app")?.path ?? "")' "$SPARKLE_FRAMEWORK")"
+if [[ -z "$SPARKLE_UPDATER_PATH" || ! -d "$SPARKLE_UPDATER_PATH" ]]; then
+  echo "ERROR: Sparkle.framework cannot resolve auxiliary Updater.app" >&2
+  exit 1
+fi
+echo "Sparkle installer helper OK."
+
 SWIFT_VERIFY_FILE="$(mktemp -t muesli-ed25519-verify.XXXXXX.swift)"
 cat > "$SWIFT_VERIFY_FILE" <<'SWIFT'
 import CryptoKit

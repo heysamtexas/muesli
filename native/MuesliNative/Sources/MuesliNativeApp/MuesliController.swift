@@ -1204,13 +1204,6 @@ final class MuesliController: NSObject {
             )
             return
         }
-        guard !updaterController.updater.sessionInProgress else {
-            showBusyStatus(
-                "Sparkle is still finishing the previous update check. Try again in a moment.",
-                restoring: appState.sparkleUpdateStatus
-            )
-            return
-        }
         updaterController.checkForUpdates(nil)
     }
 
