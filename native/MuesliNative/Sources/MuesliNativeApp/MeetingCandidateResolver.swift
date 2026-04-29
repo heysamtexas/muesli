@@ -44,6 +44,7 @@ struct MeetingCandidate: Equatable {
     let meetingTitle: String?
     let sourceBundleID: String?
     let sourcePID: pid_t?
+    let suppressionID: String
 
     init(
         id: String,
@@ -54,7 +55,8 @@ struct MeetingCandidate: Equatable {
         startedAt: Date,
         meetingTitle: String?,
         sourceBundleID: String? = nil,
-        sourcePID: pid_t? = nil
+        sourcePID: pid_t? = nil,
+        suppressionID: String? = nil
     ) {
         self.id = id
         self.platform = platform
@@ -65,6 +67,7 @@ struct MeetingCandidate: Equatable {
         self.meetingTitle = meetingTitle
         self.sourceBundleID = sourceBundleID
         self.sourcePID = sourcePID
+        self.suppressionID = suppressionID ?? id
     }
 
     var subtitle: String {
@@ -80,6 +83,7 @@ struct MeetingCandidate: Equatable {
             && lhs.meetingTitle == rhs.meetingTitle
             && lhs.sourceBundleID == rhs.sourceBundleID
             && lhs.sourcePID == rhs.sourcePID
+            && lhs.suppressionID == rhs.suppressionID
     }
 }
 
@@ -216,6 +220,11 @@ enum MeetingURLNormalizer {
 }
 
 final class MeetingCandidateResolver {
+    private struct AppAudioSession {
+        let id: String
+        var lastSeenAt: Date
+    }
+
     static let dedicatedApps: [String: (name: String, platform: MeetingCandidate.Platform)] = [
         "us.zoom.xos": ("Zoom", .zoom),
         "us.zoom.ZoomPhone": ("Zoom Phone", .zoom),
@@ -228,8 +237,17 @@ final class MeetingCandidateResolver {
         "net.whatsapp.WhatsApp": ("WhatsApp", .whatsApp),
     ]
 
+    /// Apps that are call-capable but too noisy for generic "running + mic"
+    /// detection. Electron chat apps can keep audio sessions warm while the
+    /// user is only messaging, so they need attributed full-duplex audio or a
+    /// stronger signal such as a calendar/browser meeting.
     static let weakDedicatedAppBundleIDs: Set<String> = [
+        "com.tinyspeck.slackmacgap",
         "net.whatsapp.WhatsApp",
+    ]
+
+    private static let fullDuplexAudioRequiredBundleIDs: Set<String> = [
+        "com.tinyspeck.slackmacgap",
     ]
 
     static let browserApps: [String: String] = [
@@ -241,8 +259,18 @@ final class MeetingCandidateResolver {
     ]
 
     var selfBundleID: String = Bundle.main.bundleIdentifier ?? "com.muesli.app"
+    /// App-audio candidates do not expose a room URL, so their
+    /// prompt identity is scoped to a contiguous attributed-audio session.
+    private let appAudioSessionIdleTimeout: TimeInterval
+    private var appAudioSessions: [String: AppAudioSession] = [:]
+
+    init(appAudioSessionIdleTimeout: TimeInterval = 10) {
+        self.appAudioSessionIdleTimeout = appAudioSessionIdleTimeout
+    }
 
     func resolve(_ snapshot: MeetingSignalSnapshot) -> MeetingCandidate? {
+        pruneExpiredAppAudioSessions(now: snapshot.now)
+
         let browserMeeting = bestBrowserMeeting(from: snapshot)
 
         if let browserMeeting,
@@ -294,6 +322,7 @@ final class MeetingCandidateResolver {
             }
 
             if let audioApp = bestMeetingAudioProcess(from: snapshot.audioInputProcesses, includeWeakApps: true) {
+                let appSessionID = appAudioSessionID(for: audioApp, now: snapshot.now)
                 return candidate(
                     id: "cal:\(calendarEvent.id)",
                     platform: platform(for: audioApp.bundleID) ?? .unknown,
@@ -303,6 +332,7 @@ final class MeetingCandidateResolver {
                     evidence: mediaEvidence(from: snapshot).union([.calendarEvent, .audioInputProcess]),
                     sourceBundleID: audioApp.bundleID,
                     sourcePID: audioApp.pid,
+                    suppressionID: appSessionID,
                     now: snapshot.now
                 )
             }
@@ -323,8 +353,9 @@ final class MeetingCandidateResolver {
 
         if let audioApp = bestMeetingAudioProcess(from: snapshot.audioInputProcesses, includeWeakApps: true) {
             let platform = platform(for: audioApp.bundleID) ?? .unknown
+            let appSessionID = appAudioSessionID(for: audioApp, now: snapshot.now)
             return candidate(
-                id: "app:\(audioApp.bundleID)",
+                id: appSessionID,
                 platform: platform,
                 appName: audioApp.appName,
                 url: nil,
@@ -332,6 +363,7 @@ final class MeetingCandidateResolver {
                 evidence: mediaEvidence(from: snapshot).union([.audioInputProcess, .dedicatedApp]),
                 sourceBundleID: audioApp.bundleID,
                 sourcePID: audioApp.pid,
+                suppressionID: appSessionID,
                 now: snapshot.now
             )
         }
@@ -384,6 +416,7 @@ final class MeetingCandidateResolver {
         for app in apps.sorted(by: { $0.isActive && !$1.isActive }) where app.bundleID != selfBundleID {
             guard let match = Self.dedicatedApps[app.bundleID] else { continue }
             if !includeWeakApps && Self.weakDedicatedAppBundleIDs.contains(app.bundleID) { continue }
+            if Self.fullDuplexAudioRequiredBundleIDs.contains(app.bundleID) { continue }
             return (app.bundleID, match.name, match.platform)
         }
         return nil
@@ -396,7 +429,14 @@ final class MeetingCandidateResolver {
         let candidates = processes.filter { process in
             guard process.bundleID != selfBundleID else { return false }
             guard Self.dedicatedApps[process.bundleID] != nil else { return false }
-            return includeWeakApps || !Self.weakDedicatedAppBundleIDs.contains(process.bundleID)
+            if !Self.weakDedicatedAppBundleIDs.contains(process.bundleID) {
+                return true
+            }
+            guard includeWeakApps else { return false }
+            guard Self.fullDuplexAudioRequiredBundleIDs.contains(process.bundleID) else {
+                return true
+            }
+            return process.isRunningOutput
         }
 
         return candidates.sorted { lhs, rhs in
@@ -441,6 +481,30 @@ final class MeetingCandidateResolver {
         Self.dedicatedApps[bundleID]?.platform
     }
 
+    private func appAudioSessionID(for process: AudioProcessActivity, now: Date) -> String {
+        let key = process.bundleID
+        if var session = appAudioSessions[key],
+           now.timeIntervalSince(session.lastSeenAt) <= appAudioSessionIdleTimeout {
+            session.lastSeenAt = now
+            appAudioSessions[key] = session
+            return session.id
+        }
+
+        let sessionStartedAt = Int(now.timeIntervalSince1970)
+        let session = AppAudioSession(
+            id: "app:\(process.bundleID):session:\(sessionStartedAt)",
+            lastSeenAt: now
+        )
+        appAudioSessions[key] = session
+        return session.id
+    }
+
+    private func pruneExpiredAppAudioSessions(now: Date) {
+        appAudioSessions = appAudioSessions.filter { _, session in
+            now.timeIntervalSince(session.lastSeenAt) <= appAudioSessionIdleTimeout
+        }
+    }
+
     private func candidate(
         id: String,
         platform: MeetingCandidate.Platform,
@@ -450,6 +514,7 @@ final class MeetingCandidateResolver {
         evidence: Set<MeetingCandidate.Evidence>,
         sourceBundleID: String?,
         sourcePID: pid_t?,
+        suppressionID: String? = nil,
         now: Date
     ) -> MeetingCandidate {
         MeetingCandidate(
@@ -461,7 +526,8 @@ final class MeetingCandidateResolver {
             startedAt: now,
             meetingTitle: title,
             sourceBundleID: sourceBundleID,
-            sourcePID: sourcePID
+            sourcePID: sourcePID,
+            suppressionID: suppressionID
         )
     }
 }
