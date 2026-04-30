@@ -100,15 +100,18 @@ final class MeetingNotificationController {
         progressBar.position = CGPoint(x: 0, y: 1.5)
 
         let dismissButton = NSButton(title: "×", target: self, action: #selector(handleDismiss))
-        dismissButton.font = .systemFont(ofSize: 24, weight: .regular)
-        dismissButton.frame = NSRect(x: 12, y: (height - 36) / 2, width: 36, height: 36)
+        dismissButton.font = .systemFont(ofSize: 15, weight: .medium)
+        dismissButton.frame = NSRect(x: 12, y: height - 32, width: 24, height: 24)
         dismissButton.wantsLayer = true
-        dismissButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        dismissButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.055).cgColor
         dismissButton.layer?.borderWidth = 1
-        dismissButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.20).cgColor
-        dismissButton.layer?.cornerRadius = 18
+        dismissButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        dismissButton.layer?.cornerRadius = 12
+        dismissButton.alignment = .center
+        dismissButton.focusRingType = .none
         dismissButton.isBordered = false
-        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.90)
+        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.72)
+        dismissButton.toolTip = "Dismiss"
         contentView.addSubview(dismissButton)
 
         // Platform icon + text layout
@@ -117,11 +120,11 @@ final class MeetingNotificationController {
             let iconSize: CGFloat = 28
             let iconView = NSImageView(image: icon)
             iconView.imageScaling = .scaleProportionallyUpOrDown
-            iconView.frame = NSRect(x: 60, y: (height - iconSize) / 2 + 2, width: iconSize, height: iconSize)
+            iconView.frame = NSRect(x: 52, y: (height - iconSize) / 2 + 2, width: iconSize, height: iconSize)
             contentView.addSubview(iconView)
-            textX = 60 + iconSize + 10
+            textX = 52 + iconSize + 10
         } else {
-            textX = 60
+            textX = 52
         }
 
         // Title label
