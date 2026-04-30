@@ -629,8 +629,12 @@ struct AppConfig: Codable {
         whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
-        showScheduledMeetingNotifications = (try? c.decode(Bool.self, forKey: .showScheduledMeetingNotifications)) ?? defaults.showScheduledMeetingNotifications
-        showMeetingDetectionNotification = (try? c.decode(Bool.self, forKey: .showMeetingDetectionNotification)) ?? defaults.showMeetingDetectionNotification
+        let decodedShowMeetingDetectionNotification = try? c.decode(Bool.self, forKey: .showMeetingDetectionNotification)
+        showScheduledMeetingNotifications =
+            (try? c.decode(Bool.self, forKey: .showScheduledMeetingNotifications))
+            ?? decodedShowMeetingDetectionNotification
+            ?? defaults.showScheduledMeetingNotifications
+        showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode

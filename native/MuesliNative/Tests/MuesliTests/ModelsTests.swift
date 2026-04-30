@@ -447,6 +447,33 @@ struct AppConfigTests {
         #expect(config.meetingHookTimeoutSeconds == 30)
     }
 
+    @Test("scheduled meeting notifications inherit legacy detection opt-out")
+    func scheduledMeetingNotificationsInheritLegacyDetectionOptOut() throws {
+        let json = """
+        {
+          "show_meeting_detection_notification": false
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.showScheduledMeetingNotifications == false)
+        #expect(config.showMeetingDetectionNotification == false)
+    }
+
+    @Test("explicit scheduled meeting notification setting overrides legacy detection setting")
+    func explicitScheduledMeetingNotificationSettingOverridesLegacyDetectionSetting() throws {
+        let json = """
+        {
+          "show_scheduled_meeting_notifications": true,
+          "show_meeting_detection_notification": false
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.showScheduledMeetingNotifications == true)
+        #expect(config.showMeetingDetectionNotification == false)
+    }
+
     @Test("unsupported cohere language falls back to english")
     func unsupportedCohereLanguageFallsBackToEnglish() throws {
         let json = """

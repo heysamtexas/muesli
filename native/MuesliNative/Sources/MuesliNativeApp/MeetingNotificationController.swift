@@ -43,7 +43,6 @@ final class MeetingNotificationController {
         // doesn't fire its callback (e.g. resetting isShowingCalendarNotification).
         self.onClose = nil
         close()
-        self.onClose = onClose
 
         let duration = dismissAfter ?? Self.dismissDuration
         self.onStartRecording = onStartRecording
@@ -64,6 +63,7 @@ final class MeetingNotificationController {
             height: height,
             margin: margin
         ) else { return false }
+        self.onClose = onClose
 
         let panel = NSPanel(
             contentRect: frame,
@@ -71,7 +71,7 @@ final class MeetingNotificationController {
             backing: .buffered,
             defer: false
         )
-        panel.level = .floating
+        panel.level = .init(rawValue: Int(CGShieldingWindowLevel()) + 1)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -272,6 +272,7 @@ final class MeetingNotificationController {
     private func autoDismissNow() {
         guard !isDismissPaused else { return }
         animateOut { [weak self] in
+            guard self?.isDismissPaused == false else { return }
             let autoDismiss = self?.onAutoDismiss
             if Self.suppressesCloseCallbackDuringAutoDismiss(hasAutoDismissHandler: autoDismiss != nil) {
                 self?.onClose = nil
@@ -304,11 +305,11 @@ final class MeetingNotificationController {
 
         guard let progressLayer else { return }
         let pausedTime = progressLayer.timeOffset
+        let resumeHostTime = CACurrentMediaTime()
         progressLayer.speed = 1
         progressLayer.timeOffset = 0
         progressLayer.beginTime = 0
-        let timeSincePause = progressLayer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
-        progressLayer.beginTime = timeSincePause
+        progressLayer.beginTime = resumeHostTime - pausedTime
     }
 
     private func animateOut(completion: @escaping () -> Void) {
