@@ -277,7 +277,7 @@ final class FloatingIndicatorController: NSObject {
                 let xSize: CGFloat = 10
                 iconLabel.frame = NSRect(
                     x: 7,
-                    y: floor((targetFrame.height - xSize) / 2) - 1,
+                    y: floor((targetFrame.height - xSize) / 2),
                     width: xSize,
                     height: xSize
                 )
