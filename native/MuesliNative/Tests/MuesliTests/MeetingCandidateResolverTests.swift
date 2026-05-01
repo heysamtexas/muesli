@@ -138,6 +138,58 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.evidence.contains(.foregroundApp) == false)
     }
 
+    @Test("Chrome URL and media fallback share suppression session")
+    func chromeURLAndMediaFallbackShareSuppressionSession() {
+        let resolver = resolver()
+        let urlCandidate = resolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            browserMeetings: [
+                BrowserMeetingContext(
+                    bundleID: "com.google.Chrome",
+                    appName: "Chrome",
+                    pid: 1234,
+                    url: "meet.google.com/pwm-txwq-txy",
+                    normalizedID: "googleMeet:meet.google.com/pwm-txwq-txy",
+                    platform: .googleMeet,
+                    isFocused: true
+                ),
+            ],
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9876,
+                    bundleID: "com.google.Chrome.helper",
+                    appName: "Google Chrome Helper",
+                    isRunningInput: true,
+                    isRunningOutput: false
+                ),
+            ],
+            foregroundBundleID: "com.google.Chrome",
+            now: now
+        ))
+
+        let mediaCandidate = resolver.resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9876,
+                    bundleID: "com.google.Chrome.helper",
+                    appName: "Google Chrome Helper",
+                    isRunningInput: true,
+                    isRunningOutput: false
+                ),
+            ],
+            foregroundBundleID: "com.google.Chrome",
+            now: now.addingTimeInterval(5)
+        ))
+
+        #expect(urlCandidate?.id == "googleMeet:meet.google.com/pwm-txwq-txy")
+        #expect(mediaCandidate?.id == "browser:com.google.Chrome:session:1800000000")
+        #expect(urlCandidate?.suppressionID == "browser:com.google.Chrome:session:1800000000")
+        #expect(mediaCandidate?.suppressionID == urlCandidate?.suppressionID)
+    }
+
     @Test("Chrome audio input resolves without URL after foreground loss")
     func chromeAudioInputResolvesWithoutURLAfterForegroundLoss() {
         let candidate = resolver().resolve(snapshot(

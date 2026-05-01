@@ -288,6 +288,11 @@ final class MeetingCandidateResolver {
 
         if let browserMeeting,
            let inputProcess = activeInputProcess(for: browserMeeting.bundleID, in: snapshot) {
+            let suppressionID = appAudioSessionID(
+                forBundleID: browserMeeting.bundleID,
+                prefix: "browser",
+                now: snapshot.now
+            )
             return candidate(
                 id: browserMeeting.normalizedID,
                 platform: browserMeeting.platform,
@@ -297,6 +302,7 @@ final class MeetingCandidateResolver {
                 evidence: browserEvidence(from: snapshot, context: browserMeeting, inputProcess: inputProcess),
                 sourceBundleID: browserMeeting.bundleID,
                 sourcePID: inputProcess.pid,
+                suppressionID: suppressionID,
                 now: snapshot.now
             )
         }
@@ -321,6 +327,11 @@ final class MeetingCandidateResolver {
         if let calendarEvent = snapshot.calendarEvent {
             if let browserMeeting {
                 let inputProcess = activeInputProcess(for: browserMeeting.bundleID, in: snapshot)
+                let suppressionID = inputProcess == nil ? nil : appAudioSessionID(
+                    forBundleID: browserMeeting.bundleID,
+                    prefix: "browser",
+                    now: snapshot.now
+                )
                 return candidate(
                     id: "cal:\(calendarEvent.id):\(browserMeeting.normalizedID)",
                     platform: browserMeeting.platform,
@@ -330,6 +341,7 @@ final class MeetingCandidateResolver {
                     evidence: browserEvidence(from: snapshot, context: browserMeeting, inputProcess: inputProcess).union([.calendarEvent]),
                     sourceBundleID: browserMeeting.bundleID,
                     sourcePID: inputProcess?.pid ?? browserMeeting.pid,
+                    suppressionID: suppressionID,
                     now: snapshot.now
                 )
             }
