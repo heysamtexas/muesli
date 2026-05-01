@@ -15,6 +15,7 @@ struct SensorAttributionSnapshot: Equatable {
 
 final class ControlCenterSensorAttributionMonitor {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingDetection")
+    private static let attributionRegex = try? NSRegularExpression(pattern: #""(mic|cam):([^"]+)""#)
 
     var onAttributionsChanged: (() -> Void)?
 
@@ -115,9 +116,10 @@ final class ControlCenterSensorAttributionMonitor {
             guard let snapshot = Self.parseSnapshot(from: line) else { continue }
             lock.lock()
             currentSnapshot = snapshot
+            let callback = onAttributionsChanged
             lock.unlock()
             logSnapshot(snapshot)
-            onAttributionsChanged?()
+            callback?()
         }
     }
 
@@ -150,8 +152,7 @@ final class ControlCenterSensorAttributionMonitor {
 
         var micBundleIDs = Set<String>()
         var cameraBundleIDs = Set<String>()
-        let pattern = #""(mic|cam):([^"]+)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        guard let regex = attributionRegex else { return nil }
         let nsPayload = NSString(string: String(payload))
         let matches = regex.matches(
             in: String(payload),

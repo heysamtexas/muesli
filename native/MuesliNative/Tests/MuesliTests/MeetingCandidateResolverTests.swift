@@ -251,6 +251,27 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.evidence.contains(.foregroundApp) == true)
     }
 
+    @Test("synthetic browser audio PID is not exposed as source PID")
+    func syntheticBrowserAudioPIDIsNotExposedAsSourcePID() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 0,
+                    bundleID: "com.google.Chrome",
+                    appName: "Chrome",
+                    isRunningInput: true,
+                    isRunningOutput: false
+                ),
+            ],
+            foregroundBundleID: "com.google.Chrome"
+        ))
+
+        #expect(candidate?.id == "browser:com.google.Chrome:session:1800000000")
+        #expect(candidate?.sourcePID == nil)
+    }
+
     @Test("background Meet URL without browser audio does not steal foreground app detection")
     func backgroundMeetURLWithoutBrowserAudioDoesNotStealForegroundAppDetection() {
         let candidate = resolver().resolve(snapshot(

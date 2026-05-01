@@ -301,7 +301,7 @@ final class MeetingCandidateResolver {
                 title: snapshot.calendarEvent?.title,
                 evidence: browserEvidence(from: snapshot, context: browserMeeting, inputProcess: inputProcess),
                 sourceBundleID: browserMeeting.bundleID,
-                sourcePID: inputProcess.pid,
+                sourcePID: validSourcePID(inputProcess.pid),
                 suppressionID: suppressionID,
                 now: snapshot.now
             )
@@ -340,7 +340,7 @@ final class MeetingCandidateResolver {
                     title: calendarEvent.title,
                     evidence: browserEvidence(from: snapshot, context: browserMeeting, inputProcess: inputProcess).union([.calendarEvent]),
                     sourceBundleID: browserMeeting.bundleID,
-                    sourcePID: inputProcess?.pid ?? browserMeeting.pid,
+                    sourcePID: inputProcess.flatMap { validSourcePID($0.pid) } ?? browserMeeting.pid,
                     suppressionID: suppressionID,
                     now: snapshot.now
                 )
@@ -356,7 +356,7 @@ final class MeetingCandidateResolver {
                     title: calendarEvent.title,
                     evidence: mediaEvidence(from: snapshot).union([.calendarEvent, .audioInputProcess]),
                     sourceBundleID: audioApp.bundleID,
-                    sourcePID: audioApp.pid,
+                    sourcePID: validSourcePID(audioApp.pid),
                     suppressionID: appSessionID,
                     now: snapshot.now
                 )
@@ -376,7 +376,7 @@ final class MeetingCandidateResolver {
                     title: calendarEvent.title,
                     evidence: browserMediaEvidence(from: snapshot, browserBundleID: browserAudio.bundleID).union([.calendarEvent]),
                     sourceBundleID: browserAudio.bundleID,
-                    sourcePID: browserAudio.process.pid,
+                    sourcePID: validSourcePID(browserAudio.process.pid),
                     suppressionID: sessionID,
                     now: snapshot.now
                 )
@@ -410,7 +410,7 @@ final class MeetingCandidateResolver {
                 title: nil,
                 evidence: browserMediaEvidence(from: snapshot, browserBundleID: browserAudio.bundleID),
                 sourceBundleID: browserAudio.bundleID,
-                sourcePID: browserAudio.process.pid,
+                sourcePID: validSourcePID(browserAudio.process.pid),
                 suppressionID: sessionID,
                 now: snapshot.now
             )
@@ -427,7 +427,7 @@ final class MeetingCandidateResolver {
                 title: nil,
                 evidence: mediaEvidence(from: snapshot).union([.audioInputProcess, .dedicatedApp]),
                 sourceBundleID: audioApp.bundleID,
-                sourcePID: audioApp.pid,
+                sourcePID: validSourcePID(audioApp.pid),
                 suppressionID: appSessionID,
                 now: snapshot.now
             )
@@ -590,6 +590,10 @@ final class MeetingCandidateResolver {
 
     private func platform(for bundleID: String) -> MeetingCandidate.Platform? {
         Self.dedicatedApps[bundleID]?.platform
+    }
+
+    private func validSourcePID(_ pid: pid_t) -> pid_t? {
+        pid > 0 ? pid : nil
     }
 
     private func appAudioSessionID(for process: AudioProcessActivity, now: Date) -> String {

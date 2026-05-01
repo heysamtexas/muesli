@@ -313,7 +313,6 @@ final class MeetingNotificationController {
         let resumeHostTime = CACurrentMediaTime()
         progressLayer.speed = 1
         progressLayer.timeOffset = 0
-        progressLayer.beginTime = 0
         progressLayer.beginTime = resumeHostTime - pausedTime
     }
 
