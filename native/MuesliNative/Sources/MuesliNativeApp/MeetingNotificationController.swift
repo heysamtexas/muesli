@@ -220,6 +220,10 @@ final class MeetingNotificationController {
         hasAutoDismissHandler
     }
 
+    static func firesAutoDismissCallbackAfterFade(wasDismissPaused: Bool) -> Bool {
+        !wasDismissPaused
+    }
+
     func close() {
         dismissTimer?.invalidate()
         dismissTimer = nil
@@ -277,13 +281,18 @@ final class MeetingNotificationController {
     private func autoDismissNow() {
         guard !isDismissPaused else { return }
         animateOut { [weak self] in
-            guard self?.isDismissPaused == false else { return }
-            let autoDismiss = self?.onAutoDismiss
-            if Self.suppressesCloseCallbackDuringAutoDismiss(hasAutoDismissHandler: autoDismiss != nil) {
-                self?.onClose = nil
+            guard let self else { return }
+            let wasPaused = self.isDismissPaused
+            let autoDismiss = self.onAutoDismiss
+            let shouldFireAutoDismiss = Self.firesAutoDismissCallbackAfterFade(wasDismissPaused: wasPaused)
+            if shouldFireAutoDismiss,
+               Self.suppressesCloseCallbackDuringAutoDismiss(hasAutoDismissHandler: autoDismiss != nil) {
+                self.onClose = nil
             }
-            self?.close()
-            autoDismiss?()
+            self.close()
+            if shouldFireAutoDismiss {
+                autoDismiss?()
+            }
         }
     }
 

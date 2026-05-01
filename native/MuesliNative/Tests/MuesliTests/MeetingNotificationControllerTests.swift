@@ -26,4 +26,11 @@ struct MeetingNotificationControllerTests {
     func detectionAutoDismissOwnsCleanupPath() {
         #expect(MeetingNotificationController.suppressesCloseCallbackDuringAutoDismiss(hasAutoDismissHandler: true))
     }
+
+    @Test("Auto-dismiss callback is skipped when hover pauses during fade-out")
+    @MainActor
+    func autoDismissCallbackSkippedWhenPausedDuringFadeOut() {
+        #expect(MeetingNotificationController.firesAutoDismissCallbackAfterFade(wasDismissPaused: false))
+        #expect(!MeetingNotificationController.firesAutoDismissCallbackAfterFade(wasDismissPaused: true))
+    }
 }
