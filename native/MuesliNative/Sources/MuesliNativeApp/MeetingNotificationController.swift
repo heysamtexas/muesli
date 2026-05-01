@@ -73,7 +73,7 @@ final class MeetingNotificationController {
 
         let panel = NSPanel(
             contentRect: frame,
-            styleMask: .borderless,
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -83,7 +83,8 @@ final class MeetingNotificationController {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        panel.becomesKeyOnlyIfNeeded = true
 
         let contentView = HoverAwareView(frame: NSRect(origin: .zero, size: NSSize(width: width, height: height)))
         contentView.onMouseEntered = { [weak self] in self?.pauseDismissCountdown() }
