@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct SensorAttributionSnapshot: Equatable {
     let micBundleIDs: Set<String>
@@ -13,6 +14,8 @@ struct SensorAttributionSnapshot: Equatable {
 }
 
 final class ControlCenterSensorAttributionMonitor {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingDetection")
+
     var onAttributionsChanged: (() -> Void)?
 
     private let lock = NSLock()
@@ -34,6 +37,8 @@ final class ControlCenterSensorAttributionMonitor {
             "stream",
             "--style",
             "compact",
+            "--level",
+            "debug",
             "--predicate",
             "subsystem == \"com.apple.controlcenter\" && category == \"sensor-indicators\" && eventMessage BEGINSWITH \"Active activity attributions changed to \"",
         ]
@@ -53,11 +58,13 @@ final class ControlCenterSensorAttributionMonitor {
 
         do {
             try process.run()
+            Self.logger.notice("sensor_attribution_stream_started")
             lock.lock()
             self.process = process
             outputPipe = pipe
             lock.unlock()
         } catch {
+            Self.logger.error("sensor_attribution_stream_failed error=\(String(describing: error), privacy: .public)")
             pipe.fileHandleForReading.readabilityHandler = nil
         }
     }
@@ -109,6 +116,7 @@ final class ControlCenterSensorAttributionMonitor {
             lock.lock()
             currentSnapshot = snapshot
             lock.unlock()
+            logSnapshot(snapshot)
             onAttributionsChanged?()
         }
     }
@@ -119,6 +127,16 @@ final class ControlCenterSensorAttributionMonitor {
         outputPipe = nil
         lineBuffer = ""
         lock.unlock()
+    }
+
+    private func logSnapshot(_ snapshot: SensorAttributionSnapshot) {
+        let mic = snapshot.micBundleIDs.sorted().joined(separator: ",")
+        let camera = snapshot.cameraBundleIDs.sorted().joined(separator: ",")
+        if mic.isEmpty && camera.isEmpty {
+            Self.logger.notice("sensor_attributions_cleared")
+        } else {
+            Self.logger.notice("sensor_attributions mic=\(mic, privacy: .public) camera=\(camera, privacy: .public)")
+        }
     }
 
     static func parseSnapshot(from line: String, now: Date = Date()) -> SensorAttributionSnapshot? {

@@ -1,9 +1,12 @@
 import AppKit
 import CoreAudio
 import Foundation
+import os
 
 @MainActor
 final class MeetingMonitor {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingDetection")
+
     var calendarEventProvider: (() -> CalendarEventContext?)?
     var detectionEnabledProvider: (() -> Bool)?
     var isRecordingProvider: (() -> Bool)?
@@ -372,6 +375,7 @@ final class MeetingMonitor {
     }
 
     private func log(_ message: String) {
+        Self.logger.notice("\(message, privacy: .public)")
         fputs("[meeting-monitor] \(message)\n", stderr)
     }
 }
