@@ -1112,6 +1112,11 @@ final class MuesliController: NSObject {
             enablePostProcessor: isPostProcessorReady,
             includeMeetingHelpers: onboardingUseCase.includesMeetings,
             progress: { value, status in
+                if wasDownloaded,
+                   value < 0.85,
+                   status?.localizedCaseInsensitiveContains("preparing") == true {
+                    return
+                }
                 if status?.localizedCaseInsensitiveContains("download") == true {
                     progress(value, "\(status ?? "Downloading \(backend.label)...")")
                 } else if value >= 0.9 {
@@ -3047,6 +3052,22 @@ final class MuesliController: NSObject {
     }
 
     private func userFacingDictationTestError(_ error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == "MuesliTranscriptionRuntime" {
+            switch nsError.code {
+            case 1:
+                return "Nemotron requires macOS 15 or later. Choose another model to test dictation."
+            case 2:
+                return "Qwen3 ASR requires macOS 15 or later. Choose another model to test dictation."
+            case 3:
+                return "Canary Qwen requires macOS 15 or later. Choose another model to test dictation."
+            case 4:
+                return "Cohere Transcribe requires macOS 15 or later. Choose another model to test dictation."
+            default:
+                return "The selected model is not available. Choose another model and try again."
+            }
+        }
+
         let rawMessage = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercasedMessage = rawMessage.lowercased()
 
