@@ -55,6 +55,7 @@ struct OnboardingView: View {
     @State private var isSigningInGoogleCal = false
     @State private var googleCalSignInDone = false
     @State private var googleCalSignInError: String?
+    @State private var hasFinishedOnboarding = false
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
     static let dictationTestStep = OnboardingFlow.Step.dictationTest.rawValue
@@ -1014,6 +1015,7 @@ struct OnboardingView: View {
     }
 
     private func saveProgress(atStep step: Int? = nil) {
+        guard !hasFinishedOnboarding else { return }
         let progress = OnboardingProgress(
             currentStep: step ?? currentStep,
             userName: userName,
@@ -1788,6 +1790,7 @@ struct OnboardingView: View {
     }
 
     private func finishOnboarding(withKey: Bool) {
+        hasFinishedOnboarding = true
         OnboardingProgress.clear()
         if isModelStillDownloading || modelReadyBackend == selectedBackend {
             publishModelPreparationStatus(
