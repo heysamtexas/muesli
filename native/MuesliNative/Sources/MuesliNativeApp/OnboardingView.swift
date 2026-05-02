@@ -1612,9 +1612,9 @@ struct OnboardingView: View {
         isModelPreparingAfterDownload = false
         let clampedProgress = min(max(progress, 0), 1)
         let currentProgress = modelDownloadProgress ?? 0
-        let isZeroRelist = clampedProgress <= 0.001 && currentProgress > 0.03
+        let isZeroReset = clampedProgress <= 0.001 && currentProgress > 0.03
 
-        guard !isZeroRelist else { return }
+        guard !isZeroReset else { return }
         modelDownloadProgress = max(currentProgress, max(clampedProgress, 0.02))
         modelDownloadStatus = detail
         publishModelPreparationStatus(
@@ -1664,6 +1664,18 @@ struct OnboardingView: View {
         appState.modelPreparationProgress = progress.map { min(max($0, 0), 1) }
         appState.isModelPreparingAfterDownload = isPreparing
         appState.modelPreparationIsComplete = isComplete
+        if isComplete {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(5))
+                guard appState.modelPreparationTitle == title,
+                      appState.modelPreparationIsComplete else { return }
+                appState.modelPreparationTitle = nil
+                appState.modelPreparationDetail = nil
+                appState.modelPreparationProgress = nil
+                appState.isModelPreparingAfterDownload = false
+                appState.modelPreparationIsComplete = false
+            }
+        }
     }
 
     private func showModelReadyIndicator(for backend: BackendOption) {
