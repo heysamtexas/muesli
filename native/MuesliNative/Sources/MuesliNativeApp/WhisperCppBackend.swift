@@ -24,7 +24,6 @@ actor WhisperKitTranscriber {
         if loadedModel == modelName, whisperKit != nil { return }
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
-        progress?(0.1, "Preparing \(modelName)...")
         let modelFolder: URL?
 
         if Self.isModelDownloaded(modelName) {
