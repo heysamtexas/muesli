@@ -12,7 +12,7 @@ struct OnboardingView: View {
     @State private var selectedUseCase: OnboardingUseCase
     @State private var selectedBackend: BackendOption
     @State private var selectedCohereLanguage: CohereTranscribeLanguage
-    @State private var summaryBackend: MeetingSummaryBackendOption = .openRouter
+    @State private var summaryBackend: MeetingSummaryBackendOption = .openAI
     @State private var apiKey = ""
     @State private var isSigningInChatGPT = false
     @State private var chatGPTSignInDone = false
@@ -117,6 +117,7 @@ struct OnboardingView: View {
         initialHotkey: HotkeyConfig = .default,
         initialSystemAudioRequested: Bool = false,
         initialUseCase: OnboardingUseCase = .dictation,
+        initialSummaryBackend: MeetingSummaryBackendOption = .openAI,
         initialModelDownloadProgress: Double? = nil,
         initialModelDownloadStatus: String? = nil
     ) {
@@ -151,6 +152,7 @@ struct OnboardingView: View {
         _selectedBackend = State(initialValue: initialBackend)
         _selectedCohereLanguage = State(initialValue: initialCohereLanguage)
         _selectedHotkey = State(initialValue: initialHotkey)
+        _summaryBackend = State(initialValue: initialSummaryBackend)
         _modelDownloadProgress = State(initialValue: initialModelDownloadProgress)
         _modelDownloadStatus = State(initialValue: initialModelDownloadStatus)
         _micGranted = State(initialValue: initialMicGranted)

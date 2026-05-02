@@ -309,6 +309,13 @@ struct MeetingSummaryBackendOption: Equatable {
     )
 
     static let all: [MeetingSummaryBackendOption] = [.openAI, .openRouter, .chatGPT]
+
+    static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
+        guard let backend, let option = all.first(where: { $0.backend == backend }) else {
+            return .openAI
+        }
+        return option
+    }
 }
 
 struct PostProcessorOption: Identifiable, Equatable {

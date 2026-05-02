@@ -324,6 +324,14 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
     }
+
+    @Test("configured values resolve with OpenAI fallback")
+    func resolvedValues() {
+        #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
+        #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
+        #expect(MeetingSummaryBackendOption.resolved("unknown") == .openAI)
+        #expect(MeetingSummaryBackendOption.resolved(nil) == .openAI)
+    }
 }
 
 @Suite("AppConfig")
