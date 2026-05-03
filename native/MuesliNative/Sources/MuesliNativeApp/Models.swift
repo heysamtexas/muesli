@@ -36,6 +36,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let whisperTinyEnglish = BackendOption(
+        backend: "whisper",
+        model: "tiny.en",
+        label: "Whisper Tiny English",
+        sizeLabel: "~153 MB",
+        description: "Smallest English WhisperKit CoreML model. Quickest local setup.",
+        recommended: false
+    )
+
     static let whisperMedium = BackendOption(
         backend: "whisper",
         model: "medium.en",
@@ -89,7 +98,7 @@ struct BackendOption: Equatable {
     ]
 
     static let whisperFamily: [BackendOption] = [
-        .whisperSmall, .whisperMedium, .whisperLargeTurbo,
+        .whisperTinyEnglish, .whisperSmall, .whisperMedium, .whisperLargeTurbo,
     ]
 
     static let qwen3Asr = BackendOption(
@@ -300,6 +309,13 @@ struct MeetingSummaryBackendOption: Equatable {
     )
 
     static let all: [MeetingSummaryBackendOption] = [.openAI, .openRouter, .chatGPT]
+
+    static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
+        guard let backend, let option = all.first(where: { $0.backend == backend }) else {
+            return .openAI
+        }
+        return option
+    }
 }
 
 struct PostProcessorOption: Identifiable, Equatable {
@@ -504,6 +520,27 @@ struct HotkeyConfig: Codable, Equatable {
     static let `default` = HotkeyConfig()
 }
 
+enum OnboardingUseCase: String, Codable, CaseIterable {
+    case dictation = "dictation"
+    case meetings = "meetings"
+    case dictationAndMeetings = "dictation_and_meetings"
+
+    var includesDictation: Bool {
+        self == .dictation || self == .dictationAndMeetings
+    }
+
+    var includesMeetings: Bool {
+        self == .meetings || self == .dictationAndMeetings
+    }
+
+    static func resolved(_ rawValue: String?) -> OnboardingUseCase {
+        guard let rawValue, let useCase = OnboardingUseCase(rawValue: rawValue) else {
+            return .dictation
+        }
+        return useCase
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var sttBackend: String = BackendOption.whisper.backend
@@ -536,6 +573,7 @@ struct AppConfig: Codable {
     var summaryModel: String = ""
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
+    var onboardingUseCase: String = OnboardingUseCase.dictation.rawValue
     var userName: String = ""
     var customMeetingTemplates: [CustomMeetingTemplate] = []
     var customWords: [CustomWord] = [
@@ -591,6 +629,7 @@ struct AppConfig: Codable {
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
+        case onboardingUseCase = "onboarding_use_case"
         case userName = "user_name"
         case customMeetingTemplates = "custom_meeting_templates"
         case customWords = "custom_words"
@@ -654,6 +693,7 @@ struct AppConfig: Codable {
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding
+        onboardingUseCase = OnboardingUseCase.resolved(try? c.decode(String.self, forKey: .onboardingUseCase)).rawValue
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
@@ -678,6 +718,10 @@ struct AppConfig: Codable {
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {
         CohereTranscribeLanguage.resolved(cohereLanguage)
+    }
+
+    var resolvedOnboardingUseCase: OnboardingUseCase {
+        OnboardingUseCase.resolved(onboardingUseCase)
     }
 }
 

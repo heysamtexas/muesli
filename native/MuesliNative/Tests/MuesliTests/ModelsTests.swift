@@ -80,6 +80,7 @@ struct BackendOptionTests {
     @Test("Whisper models use WhisperKit CoreML identifiers")
     func whisperKitModels() {
         // WhisperKit models use short variant names, not ggml- prefixed binaries
+        #expect(BackendOption.whisperTinyEnglish.model == "tiny.en")
         #expect(BackendOption.whisperSmall.model == "small.en")
         #expect(BackendOption.whisperMedium.model == "medium.en")
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
@@ -323,6 +324,14 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
     }
+
+    @Test("configured values resolve with OpenAI fallback")
+    func resolvedValues() {
+        #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
+        #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
+        #expect(MeetingSummaryBackendOption.resolved("unknown") == .openAI)
+        #expect(MeetingSummaryBackendOption.resolved(nil) == .openAI)
+    }
 }
 
 @Suite("AppConfig")
@@ -348,6 +357,7 @@ struct AppConfigTests {
         #expect(config.showFloatingIndicator == true)
         #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
+        #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.userName.isEmpty)
         #expect(config.customMeetingTemplates.isEmpty)
         #expect(config.meetingHookEnabled == false)
@@ -361,6 +371,7 @@ struct AppConfigTests {
         config.openAIAPIKey = "sk-test-key-123"
         config.userName = "Test User"
         config.hasCompletedOnboarding = true
+        config.onboardingUseCase = OnboardingUseCase.dictationAndMeetings.rawValue
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
         config.defaultMeetingTemplateID = "weekly-team-meeting"
         config.meetingRecordingSavePolicy = .always
@@ -385,6 +396,7 @@ struct AppConfigTests {
         #expect(decoded.openAIAPIKey == "sk-test-key-123")
         #expect(decoded.userName == "Test User")
         #expect(decoded.hasCompletedOnboarding == true)
+        #expect(decoded.resolvedOnboardingUseCase == .dictationAndMeetings)
         #expect(decoded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
         #expect(decoded.defaultMeetingTemplateID == "weekly-team-meeting")
         #expect(decoded.meetingRecordingSavePolicy == .always)
@@ -414,6 +426,7 @@ struct AppConfigTests {
         #expect(json["meeting_transcription_model"] != nil)
         #expect(json["indicator_anchor"] != nil)
         #expect(json["has_completed_onboarding"] != nil)
+        #expect(json["onboarding_use_case"] != nil)
         #expect(json["user_name"] != nil)
         #expect(json["default_meeting_template_id"] != nil)
         #expect(json["meeting_recording_save_policy"] != nil)
@@ -436,6 +449,7 @@ struct AppConfigTests {
         #expect(config.showFloatingIndicator == true)
         #expect(config.resolvedCohereLanguage == .english)
         #expect(config.hasCompletedOnboarding == false)
+        #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
         #expect(config.meetingRecordingSavePolicy == .never)
         #expect(config.showScheduledMeetingNotifications == true)
@@ -445,6 +459,19 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+    }
+
+    @Test("unsupported onboarding use case falls back to dictation")
+    func unsupportedOnboardingUseCaseFallsBackToDictation() throws {
+        let json = """
+        {
+          "onboarding_use_case": "unknown"
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.resolvedOnboardingUseCase == .dictation)
     }
 
     @Test("scheduled meeting notifications inherit legacy detection opt-out")
