@@ -1974,6 +1974,7 @@ final class MuesliController: NSObject {
     }
 
     func startForegroundMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil) {
+        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
         startMeetingRecording(title: title, calendarEventID: calendarEventID, openDocument: true)
         openHistoryWindow(tab: .meetings)
     }

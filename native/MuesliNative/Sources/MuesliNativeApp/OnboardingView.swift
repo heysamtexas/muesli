@@ -110,13 +110,13 @@ struct OnboardingView: View {
             systemAudio: initialSystemAudioGranted,
             screenRecording: initialScreenRecordingGranted
         )
-        let permissionGatedInitialStep = initialUseCase.includesDictation
-            ? OnboardingPermissionGate.resumeStep(
-                requestedStep: initialStep,
-                permissions: initialPermissions,
-                dictationTestStep: Self.dictationTestStep
-            )
-            : initialStep
+        let permissionGatedInitialStep = OnboardingPermissionGate.resumeStep(
+            requestedStep: initialStep,
+            permissions: initialPermissions,
+            useCase: initialUseCase,
+            permissionsStep: Self.permissionsStep,
+            dictationTestStep: Self.dictationTestStep
+        )
         let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)

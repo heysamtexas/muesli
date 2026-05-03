@@ -13,13 +13,26 @@ enum OnboardingPermissionGate {
         permissions.microphone && permissions.accessibility && permissions.inputMonitoring
     }
 
+    static func hasRequiredPermissions(
+        _ permissions: OnboardingPermissionSnapshot,
+        for useCase: OnboardingUseCase
+    ) -> Bool {
+        if useCase.includesDictation {
+            return hasRequiredDictationPermissions(permissions)
+        }
+        return permissions.microphone
+    }
+
     static func resumeStep(
         requestedStep: Int,
         permissions: OnboardingPermissionSnapshot,
+        useCase: OnboardingUseCase,
+        permissionsStep: Int,
         dictationTestStep: Int
     ) -> Int {
-        if requestedStep >= dictationTestStep && !hasRequiredDictationPermissions(permissions) {
-            return dictationTestStep - 1
+        let gatedStep = useCase.includesDictation ? dictationTestStep : permissionsStep + 1
+        if requestedStep >= gatedStep && !hasRequiredPermissions(permissions, for: useCase) {
+            return permissionsStep
         }
         return requestedStep
     }

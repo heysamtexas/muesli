@@ -97,6 +97,8 @@ struct OnboardingProgressTests {
         let step = OnboardingPermissionGate.resumeStep(
             requestedStep: 4,
             permissions: permissions,
+            useCase: .dictation,
+            permissionsStep: 3,
             dictationTestStep: 4
         )
 
@@ -117,10 +119,34 @@ struct OnboardingProgressTests {
         let step = OnboardingPermissionGate.resumeStep(
             requestedStep: 4,
             permissions: permissions,
+            useCase: .dictation,
+            permissionsStep: 3,
             dictationTestStep: 4
         )
 
         #expect(!OnboardingPermissionGate.hasRequiredDictationPermissions(permissions))
+        #expect(step == 3)
+    }
+
+    @Test("meetings-only resume requires microphone before leaving permissions step")
+    func meetingsOnlyResumeRequiresMicrophone() {
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: false,
+            accessibility: false,
+            inputMonitoring: false,
+            systemAudio: false,
+            screenRecording: false
+        )
+
+        let step = OnboardingPermissionGate.resumeStep(
+            requestedStep: 5,
+            permissions: permissions,
+            useCase: .meetings,
+            permissionsStep: 3,
+            dictationTestStep: 4
+        )
+
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(permissions, for: .meetings))
         #expect(step == 3)
     }
 }

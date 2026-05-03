@@ -1135,6 +1135,9 @@ struct SettingsView: View {
             pendingScreenContextEnable = false
             controller.updateConfig { $0.enableScreenContext = true }
         }
+        if !screenRecordingGranted && pendingScreenContextEnable {
+            pendingScreenContextEnable = false
+        }
         if !screenRecordingGranted && appState.config.enableScreenContext {
             pendingScreenContextEnable = false
             controller.updateConfig { $0.enableScreenContext = false }
