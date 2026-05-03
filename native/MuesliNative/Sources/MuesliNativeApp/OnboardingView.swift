@@ -1572,14 +1572,14 @@ struct OnboardingView: View {
             } catch {
                 await MainActor.run {
                     guard selectedBackend == backend else { return }
-                    modelDownloadError = "Download failed. Check your connection and retry."
-                    modelDownloadStatus = "Download paused"
+                    modelDownloadError = modelPreparationFailureMessage(for: backend)
+                    modelDownloadStatus = backend.isDownloaded ? "Model setup paused" : "Download paused"
                     modelDownloadProgress = nil
                     isModelPreparingAfterDownload = false
                     isModelStillDownloading = false
                     publishModelPreparationStatus(
-                        title: "Download paused",
-                        detail: "Check your connection and retry",
+                        title: backend.isDownloaded ? "Model setup paused" : "Download paused",
+                        detail: modelDownloadError,
                         progress: nil,
                         isPreparing: false,
                         isComplete: false
@@ -1655,6 +1655,12 @@ struct OnboardingView: View {
             return "0 MB of \(size)"
         }
         return "Starting \(backend.label) download..."
+    }
+
+    private func modelPreparationFailureMessage(for backend: BackendOption) -> String {
+        backend.isDownloaded
+            ? "Model setup failed. Restart Muesli or retry from Models."
+            : "Download failed. Check your connection and retry."
     }
 
     private func publishModelPreparationStatus(
@@ -1795,7 +1801,19 @@ struct OnboardingView: View {
     private func finishOnboarding(withKey: Bool) {
         hasFinishedOnboarding = true
         OnboardingProgress.clear()
-        if isModelStillDownloading || modelReadyBackend == selectedBackend {
+        let shouldContinueModelPreparation = modelDownloadTask != nil && modelReadyBackend != selectedBackend
+        if shouldContinueModelPreparation {
+            modelDownloadTask?.cancel()
+            modelDownloadTask = nil
+            modelDownloadBackend = nil
+            controller.continueModelPreparationAfterOnboarding(
+                selectedBackend,
+                onboardingUseCase: selectedUseCase,
+                initialProgress: modelDownloadProgress,
+                initialStatus: modelDownloadStatus,
+                isPreparing: isModelPreparingAfterDownload
+            )
+        } else if isModelStillDownloading || modelReadyBackend == selectedBackend {
             publishModelPreparationStatus(
                 title: modelReadyBackend == selectedBackend ? "\(selectedBackend.label) ready" : "Preparing \(selectedBackend.label)",
                 detail: modelReadyBackend == selectedBackend ? "Ready for transcription" : modelDownloadStatus,

@@ -92,6 +92,7 @@ final class MuesliController: NSObject {
     private var notifiedUpcomingEventIDs = Set<String>()
 
     private var searchTask: Task<Void, Never>?
+    private var onboardingModelPreparationTask: Task<Void, Never>?
     private var maraudersMapCountdown: MaraudersMapCountdownController?
 
     private var statusBarController: StatusBarController?
@@ -1045,6 +1046,70 @@ final class MuesliController: NSObject {
         bringOnboardingToFront()
     }
 
+    func continueModelPreparationAfterOnboarding(
+        _ backend: BackendOption,
+        onboardingUseCase: OnboardingUseCase,
+        initialProgress: Double?,
+        initialStatus: String?,
+        isPreparing: Bool
+    ) {
+        onboardingModelPreparationTask?.cancel()
+        updateModelPreparationStatus(
+            title: "Preparing \(backend.label)",
+            detail: initialStatus ?? "Preparing \(backend.label)...",
+            progress: initialProgress,
+            isPreparing: isPreparing,
+            isComplete: false
+        )
+
+        onboardingModelPreparationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.downloadModelForOnboarding(
+                    backend,
+                    onboardingUseCase: onboardingUseCase
+                ) { progress, status in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.applyModelPreparationProgress(
+                            progress,
+                            status: status,
+                            backend: backend
+                        )
+                    }
+                }
+                await MainActor.run {
+                    self.onboardingModelPreparationTask = nil
+                    self.updateModelPreparationStatus(
+                        title: "\(backend.label) ready",
+                        detail: "Ready for transcription",
+                        progress: 1.0,
+                        isPreparing: false,
+                        isComplete: true
+                    )
+                    SoundController.playModelReady(enabled: self.config.soundEnabled)
+                    self.statusBarController?.refresh()
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.onboardingModelPreparationTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.onboardingModelPreparationTask = nil
+                    self.updateModelPreparationStatus(
+                        title: backend.isDownloaded ? "Model setup paused" : "Download paused",
+                        detail: self.modelPreparationFailureMessage(for: backend),
+                        progress: nil,
+                        isPreparing: false,
+                        isComplete: false
+                    )
+                }
+                fputs("[muesli-native] post-onboarding model preparation failed: \(error)\n", stderr)
+            }
+        }
+    }
+
     func relaunchApp() {
         let bundlePath = Bundle.main.bundleURL.path
         // Defer to next run-loop to escape any SwiftUI animation context
@@ -1140,6 +1205,65 @@ final class MuesliController: NSObject {
         progress(1.0, "\(backend.label) ready")
     }
 
+    private func applyModelPreparationProgress(_ progress: Double, status: String?, backend: BackendOption) {
+        let detail = status ?? "Preparing \(backend.label)..."
+        let lowercasedDetail = detail.lowercased()
+        let isPreparing = lowercasedDetail.contains("compiling")
+            || lowercasedDetail.contains("warming")
+            || lowercasedDetail.contains("readying")
+
+        if isPreparing {
+            updateModelPreparationStatus(
+                title: "Preparing \(backend.label)",
+                detail: "Optimizing \(backend.label) for this Mac...",
+                progress: nil,
+                isPreparing: true,
+                isComplete: false
+            )
+            return
+        }
+
+        updateModelPreparationStatus(
+            title: "Preparing \(backend.label)",
+            detail: detail,
+            progress: progress,
+            isPreparing: false,
+            isComplete: false
+        )
+    }
+
+    private func updateModelPreparationStatus(
+        title: String,
+        detail: String?,
+        progress: Double?,
+        isPreparing: Bool,
+        isComplete: Bool
+    ) {
+        appState.modelPreparationTitle = title
+        appState.modelPreparationDetail = detail
+        appState.modelPreparationProgress = progress.map { min(max($0, 0), 1) }
+        appState.isModelPreparingAfterDownload = isPreparing
+        appState.modelPreparationIsComplete = isComplete
+        if isComplete {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(5))
+                guard appState.modelPreparationTitle == title,
+                      appState.modelPreparationIsComplete else { return }
+                appState.modelPreparationTitle = nil
+                appState.modelPreparationDetail = nil
+                appState.modelPreparationProgress = nil
+                appState.isModelPreparingAfterDownload = false
+                appState.modelPreparationIsComplete = false
+            }
+        }
+    }
+
+    private func modelPreparationFailureMessage(for backend: BackendOption) -> String {
+        backend.isDownloaded
+            ? "Model setup failed. Restart Muesli or retry from Models."
+            : "Download failed. Check your connection and retry."
+    }
+
     func completeOnboarding(
         userName: String,
         backend: BackendOption,
@@ -1195,11 +1319,7 @@ final class MuesliController: NSObject {
                 "meetings_selected": onboardingUseCase.includesMeetings ? "true" : "false",
             ])
             let completionTab = OnboardingFlow.completionTab(for: onboardingUseCase)
-            if completionTab == .meetings {
-                openHistoryWindow(tab: completionTab)
-            } else {
-                openHistoryWindow()
-            }
+            openHistoryWindow(tab: completionTab)
         } else {
             showOnboarding(resumeFrom: onboardingProgressForPermissionRepair())
         }
