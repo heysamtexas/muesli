@@ -738,6 +738,7 @@ struct OnboardingView: View {
             ("hand.raised.fill", "Accessibility", "Paste transcribed text into other apps", accessibilityGranted, {
                 let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
                 AXIsProcessTrustedWithOptions(opts)
+                self.openSystemSettings("Privacy_Accessibility")
             }),
             ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk dictation", inputMonitoringGranted, {
                 if !CGRequestListenEventAccess() {

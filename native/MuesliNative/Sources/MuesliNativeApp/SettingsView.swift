@@ -985,6 +985,7 @@ struct SettingsView: View {
                 action: {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
                     AXIsProcessTrustedWithOptions(opts)
+                    openPrivacyPane("Privacy_Accessibility")
                 },
                 pane: "Privacy_Accessibility"
             )
