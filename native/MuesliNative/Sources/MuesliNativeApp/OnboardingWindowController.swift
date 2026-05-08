@@ -14,6 +14,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         super.init()
     }
 
+    var isVisible: Bool { window?.isVisible == true }
+
     func show() {
         if window == nil { buildWindow() }
         window?.center()

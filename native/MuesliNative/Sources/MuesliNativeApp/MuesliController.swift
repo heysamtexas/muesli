@@ -1121,6 +1121,10 @@ final class MuesliController: NSObject {
     // MARK: - Onboarding
 
     func showOnboarding(resumeFrom progress: OnboardingProgress? = nil) {
+        if let existing = onboardingWindowController, existing.isVisible {
+            existing.bringToFront()
+            return
+        }
         let wc = OnboardingWindowController(controller: self, resumeProgress: progress)
         self.onboardingWindowController = wc
         wc.show()
