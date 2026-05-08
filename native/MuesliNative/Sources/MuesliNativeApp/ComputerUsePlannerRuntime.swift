@@ -504,7 +504,11 @@ final class ComputerUsePlannerRuntime {
         guard shouldTrackForRepetition(toolCall.tool), let delta else { return nil }
         let key = repeatedActionKey(toolCall)
         guard delta.status == .unchanged else {
-            counts.removeValue(forKey: key)
+            if delta.status == .changed {
+                counts.removeAll()
+            } else {
+                counts.removeValue(forKey: key)
+            }
             return nil
         }
         let count = (counts[key] ?? 0) + 1
@@ -536,49 +540,19 @@ final class ComputerUsePlannerRuntime {
 
     private func finishIndicatesFailure(_ reason: String) -> Bool {
         let lowered = reason.lowercased()
-        let failurePhrases = [
-            "cannot",
-            "can't",
-            "could not",
-            "unable",
-            "blocked",
-            "incomplete",
-            "not complete",
-            "not completed",
-            "failed",
-            "unsupported",
-            "permission",
-            "requires confirmation",
-            "was not able",
-            "did not",
+        let failurePatterns = [
+            #"^\s*(blocked|failed|unsupported|incomplete|not completed?)\s*[.!]?\s*$"#,
+            #"\b(requires|needs)\s+confirmation\b"#,
+            #"\b(task|request|command|workflow)\s+(is\s+)?(blocked|incomplete|not completed?|failed|unsupported)\b"#,
+            #"\b(cannot|can't|could not|unable to|was not able to)\s+(complete|finish|perform|do|continue|proceed|access|open|click|type|paste|navigate|find)\b"#,
+            #"\b(did not|didn't)\s+(complete|finish|perform|send|post|open|click|type|paste|navigate|find)\b"#,
+            #"\b(permission|permissions)\s+(required|needed|denied|missing|not granted)\b"#,
+            #"\b(not authorized|not allowed|access denied)\b"#,
+            #"\bfailed to\s+(complete|finish|perform|open|click|type|paste|navigate|send|post)\b"#,
         ]
-        return failurePhrases.contains { lowered.contains($0) }
-    }
-
-    private func repeatedActionMessage(
-        toolCall: ComputerUseToolCall,
-        observation: ComputerUseObservation,
-        repeatedToolCounts: inout [String: Int]
-    ) -> String? {
-        guard shouldTrackForRepetition(toolCall.tool) else { return nil }
-        var keyParts: [String] = []
-        keyParts.append(toolCall.tool.rawValue)
-        keyParts.append(toolCall.elementID ?? "")
-        keyParts.append(toolCall.elementIndex.map(String.init) ?? "")
-        keyParts.append(toolCall.appName ?? "")
-        keyParts.append(toolCall.canonicalBundleID)
-        keyParts.append(toolCall.label ?? "")
-        keyParts.append(toolCall.key ?? "")
-        keyParts.append(toolCall.text ?? "")
-        keyParts.append(toolCall.value ?? "")
-        keyParts.append(toolCall.url ?? "")
-        keyParts.append(toolCall.direction?.rawValue ?? "")
-        keyParts.append(observationSignature(observation))
-        let key = keyParts.joined(separator: "|")
-        let count = (repeatedToolCounts[key] ?? 0) + 1
-        repeatedToolCounts[key] = count
-        guard count > 2 else { return nil }
-        return "CUA stopped repeated \(toolCall.summary) after two unchanged attempts."
+        return failurePatterns.contains { pattern in
+            lowered.range(of: pattern, options: .regularExpression) != nil
+        }
     }
 
     private func shouldTrackForRepetition(_ tool: ComputerUseToolName) -> Bool {

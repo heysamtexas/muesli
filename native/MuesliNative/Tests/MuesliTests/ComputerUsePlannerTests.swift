@@ -934,6 +934,41 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
     }
 
+    @Test("changed action clears previous unchanged action counts")
+    @MainActor
+    func changedActionClearsPreviousUnchangedActionCounts() async {
+        var observeCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCount += 1
+                let title = observeCount <= 2 ? "Before" : "After"
+                return Self.observation(windowTitle: title, screenshot: Self.screenshot())
+            },
+            plan: { request in
+                switch request.step {
+                case 1:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .click, elementID: "e1", label: "Action A"))
+                case 2:
+                    #expect(request.priorOutcomes.last?.verificationStatus == .unchanged)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .click, elementID: "e2", label: "Action B"))
+                case 3:
+                    #expect(request.priorOutcomes.last?.verificationStatus == .changed)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .click, elementID: "e1", label: "Action A"))
+                default:
+                    #expect(request.priorOutcomes.last?.verificationStatus == .unchanged)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+                }
+            },
+            execute: { _, _ in .executed("Clicked") }
+        )
+
+        let result = await runtime.run(command: "try alternate actions")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(observeCount == 4)
+    }
+
     @Test("finish with incomplete language becomes failed")
     @MainActor
     func finishWithIncompleteLanguageBecomesFailed() async {
@@ -950,6 +985,32 @@ struct ComputerUsePlannerRuntimeTests {
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
         #expect(result.message.contains("attempted to finish with an incomplete or blocked result"))
+    }
+
+    @Test("finish failure heuristic avoids success false positives")
+    @MainActor
+    func finishFailureHeuristicAvoidsSuccessFalsePositives() async {
+        var finishReasons = [
+            "Granted the camera permission.",
+            "The modal did not have a cancel button so I pressed Escape instead; task is complete.",
+        ]
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in Self.observation() },
+            plan: { _ in
+                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                    tool: .finish,
+                    reason: finishReasons.removeFirst()
+                ))
+            },
+            execute: { _, _ in .executed("unexpected") }
+        )
+
+        let permissionResult = await runtime.run(command: "grant permission")
+        let didNotResult = await runtime.run(command: "dismiss modal")
+
+        #expect(permissionResult.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(didNotResult.status == ComputerUsePlannerRuntimeResult.Status.done)
     }
 
     @Test("browser page permission failures continue with screen fallback")

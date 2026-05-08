@@ -371,8 +371,9 @@ enum ComputerUseObservationCapture {
         let windowFrame = window.flatMap(rect)
         let screenshot = includeScreenshot ? captureScreenshot(for: app, fallbackFrame: windowFrame) : nil
         registry.registerScreenshot(screenshot)
-        let focusedElement = focusedElementObservation(requiredPID: app.processIdentifier)
-        let selectedText = selectedTextObservation(from: focusedElement)
+        let focusedElementSnapshot = focusedElementSnapshot(requiredPID: app.processIdentifier)
+        let focusedElement = focusedElementSnapshot?.observation
+        let selectedText = selectedTextObservation(from: focusedElementSnapshot?.element)
         let appInstructions = ComputerUseAppInstructionProvider.instructions(for: bundleID, appName: appName)
 
         var candidates: [ComputerUseElementCandidate] = []
@@ -583,7 +584,12 @@ enum ComputerUseObservationCapture {
         return (rawActions as? [String]) ?? []
     }
 
-    private static func focusedElementObservation(requiredPID: pid_t) -> ComputerUseFocusedElement? {
+    private struct FocusedElementSnapshot {
+        let element: AXUIElement
+        let observation: ComputerUseFocusedElement
+    }
+
+    private static func focusedElementSnapshot(requiredPID: pid_t) -> FocusedElementSnapshot? {
         let system = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &value) == .success,
@@ -593,7 +599,7 @@ enum ComputerUseObservationCapture {
 
         let element = rawElement as! AXUIElement
         guard processID(of: element) == requiredPID else { return nil }
-        return ComputerUseFocusedElement(
+        let observation = ComputerUseFocusedElement(
             role: axString(element, kAXRoleAttribute),
             title: truncate(axString(element, kAXTitleAttribute), limit: 80),
             label: truncate(axString(element, kAXDescriptionAttribute), limit: 80),
@@ -601,17 +607,12 @@ enum ComputerUseObservationCapture {
             frame: rect(element).map(ComputerUseRect.init),
             processID: processID(of: element).map(Int.init)
         )
+        return FocusedElementSnapshot(element: element, observation: observation)
     }
 
-    private static func selectedTextObservation(from focusedElement: ComputerUseFocusedElement?) -> String? {
-        guard focusedElement != nil else { return nil }
-        let system = AXUIElementCreateSystemWide()
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &value) == .success,
-              let rawElement = value,
-              CFGetTypeID(rawElement) == AXUIElementGetTypeID()
-        else { return nil }
-        let selected = axString(rawElement as! AXUIElement, kAXSelectedTextAttribute)
+    private static func selectedTextObservation(from focusedElement: AXUIElement?) -> String? {
+        guard let focusedElement else { return nil }
+        let selected = axString(focusedElement, kAXSelectedTextAttribute)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return selected.isEmpty ? nil : truncate(selected, limit: 240)
     }
