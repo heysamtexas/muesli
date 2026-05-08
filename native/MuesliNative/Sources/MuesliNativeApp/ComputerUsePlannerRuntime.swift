@@ -4,6 +4,7 @@ import MuesliCore
 struct ComputerUsePlannerRuntimeResult: Equatable {
     enum Status: Equatable {
         case done
+        case timedOut
         case needsConfirmation
         case failed
         case cancelled
@@ -36,6 +37,7 @@ final class ComputerUsePlannerRuntime {
     private let plan: PlanHandler
     private let execute: ExecuteHandler
     private let maxPlannerRetries = 1
+    private let maxUnchangedObservationLoops = 4
 
     init(
         config: AppConfig,
@@ -85,6 +87,7 @@ final class ComputerUsePlannerRuntime {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         var priorResults: [ComputerUseToolOutcome] = []
         var unchangedActionCounts: [String: Int] = [:]
+        var unchangedObservationCounts: [String: Int] = [:]
         var invalidToolCallRepairCount = 0
         let maxInvalidToolCallRepairs = 2
         // V1 keeps foreground activation, but state is scoped to a target app.
@@ -102,8 +105,8 @@ final class ComputerUsePlannerRuntime {
                 return cancelledResult(traceEvents: traceEvents, step: step)
             }
             if Date() >= deadline {
-                traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: "CUA timed out", status: "failed", step: step))
-                return .init(status: .failed, message: "CUA timed out", traceEvents: traceEvents)
+                traceEvents.append(traceEvent(kind: "timed_out", title: "Timed out", body: "CUA timed out", status: "timed_out", step: step))
+                return .init(status: .timedOut, message: "CUA timed out", traceEvents: traceEvents)
             }
             if let maxSteps, step > maxSteps {
                 traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: "CUA reached its step limit", status: "failed", step: maxSteps))
@@ -222,34 +225,28 @@ final class ComputerUsePlannerRuntime {
                 onStatus("Observing screen")
                 observation = observe(registry, true, currentTarget)
                 traceEvents.append(observationEvent(observation, step: step))
-                let delta = stateDelta(
+                let feedback = observationToolFeedback(
                     before: beforeObservation,
                     after: observation,
                     toolCall: toolCall,
-                    result: result
-                )
-                let outcomeMessage = verifiedOutcomeMessage(
-                    base: recoverableFallbackMessage(for: toolCall, result: result) ?? result.message,
-                    delta: delta
+                    result: result,
+                    counts: &unchangedObservationCounts
                 )
                 priorResults.append(outcome(
                     step: step,
                     toolCall: toolCall,
                     result: result,
-                    message: outcomeMessage,
+                    message: feedback.message,
                     observation: observation,
-                    delta: delta
+                    delta: nil
                 ))
-                if let blocked = repeatedUnchangedMessage(
-                    toolCall: toolCall,
-                    delta: delta,
-                    counts: &unchangedActionCounts
-                ) {
+                if let blocked = feedback.blocked {
                     traceEvents.append(traceEvent(kind: "failed", title: "Repeated action stopped", body: blocked, status: "failed", step: step))
                     return .init(status: .failed, message: blocked, traceEvents: traceEvents)
                 }
                 continue
             default:
+                unchangedObservationCounts.removeAll()
                 onStatus(statusTitle(for: toolCall))
                 traceEvents.append(traceEvent(
                     kind: "tool_call",
@@ -470,6 +467,35 @@ final class ComputerUsePlannerRuntime {
         return "\(base). Verification: \(delta.summary)"
     }
 
+    private func observationToolFeedback(
+        before: ComputerUseObservation,
+        after: ComputerUseObservation,
+        toolCall: ComputerUseToolCall,
+        result: ComputerUseExecutionResult,
+        counts: inout [String: Int]
+    ) -> (message: String, blocked: String?) {
+        let base = recoverableFallbackMessage(for: toolCall, result: result) ?? result.message
+        let key = repeatedActionKey(toolCall)
+        guard observationSignature(before) == observationSignature(after) else {
+            counts.removeValue(forKey: key)
+            return (
+                "\(base). Captured fresh state; continue from the visible AX/screenshot context.",
+                nil
+            )
+        }
+
+        let count = (counts[key] ?? 0) + 1
+        counts[key] = count
+        let message = "\(base). State is unchanged after \(toolCall.summary); choose a concrete action now and do not call get_app_state/get_window_state again unless the target app or window changes."
+        guard count >= maxUnchangedObservationLoops else {
+            return (message, nil)
+        }
+        return (
+            message,
+            "CUA stopped repeated \(toolCall.summary) after \(maxUnchangedObservationLoops) unchanged observations with no intervening action. Choose a concrete action instead of observing again."
+        )
+    }
+
     private func repeatedUnchangedMessage(
         toolCall: ComputerUseToolCall,
         delta: ComputerUseStateDelta?,
@@ -557,9 +583,9 @@ final class ComputerUsePlannerRuntime {
 
     private func shouldTrackForRepetition(_ tool: ComputerUseToolName) -> Bool {
         switch tool {
-        case .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .drag, .pressKey, .hotkey, .typeText, .pasteText, .setValue, .scroll, .navigateURL, .navigateActiveBrowserTab, .openNewBrowserTab, .activateBrowserTab, .getAppState, .getWindowState:
+        case .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .drag, .pressKey, .hotkey, .typeText, .pasteText, .setValue, .scroll, .navigateURL, .navigateActiveBrowserTab, .openNewBrowserTab, .activateBrowserTab:
             return true
-        case .listApps, .launchApp, .listWindows, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
+        case .listApps, .launchApp, .listWindows, .getAppState, .getWindowState, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
             return false
         }
     }

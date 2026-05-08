@@ -453,6 +453,13 @@ struct ComputerUseTraceFormatterTests {
         #expect(ComputerUseTraceFormatter.displayStatus(for: planning) == nil)
         #expect(ComputerUseTraceFormatter.displayStatus(for: result) == "executed")
     }
+
+    @Test("formats final CUA status buckets")
+    func formatsFinalStatusBuckets() {
+        #expect(ComputerUseTraceFormatter.displayFinalStatus("done") == "done")
+        #expect(ComputerUseTraceFormatter.displayFinalStatus("timedout") == "timed_out")
+        #expect(ComputerUseTraceFormatter.displayFinalStatus("fail") == "failed")
+    }
 }
 
 @Suite("Computer Use planner runtime")
@@ -489,6 +496,24 @@ struct ComputerUsePlannerRuntimeTests {
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
         #expect(result.message == "blocked")
+    }
+
+    @Test("timeout produces timed out runtime result")
+    @MainActor
+    func timeoutProducesTimedOutResult() async {
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            timeoutSeconds: -1,
+            observe: { _, _, _ in Self.observation() },
+            plan: { _ in ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done")) },
+            execute: { _, _ in .executed("unexpected") }
+        )
+
+        let result = await runtime.run(command: "do something")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.timedOut)
+        #expect(result.message == "CUA timed out")
+        #expect(result.traceEvents.contains { $0.kind == "timed_out" && $0.status == "timed_out" })
     }
 
     @Test("cancelled executor result produces cancelled runtime result")
@@ -573,9 +598,58 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.traceEvents.contains { $0.title == "Repeated action stopped" })
     }
 
-    @Test("stops repeated get window state loops")
+    @Test("repeated get window state gives planner feedback before stopping")
     @MainActor
-    func stopsRepeatedGetWindowStateLoops() async {
+    func repeatedGetWindowStateGivesPlannerFeedbackBeforeStopping() async {
+        var executionCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                Self.observation(
+                    appName: "Google Chrome",
+                    bundleID: "com.google.Chrome",
+                    windowTitle: "YouTube",
+                    screenshot: ComputerUseScreenshotObservation(
+                        screenshotID: "s\(executionCount)",
+                        width: 2940,
+                        height: 1800,
+                        windowFrame: ComputerUseRect(x: 0, y: 0, width: 1470, height: 900),
+                        scaleX: 2,
+                        scaleY: 2,
+                        imageDataURL: "data:image/jpeg;base64,abc"
+                    )
+                )
+            },
+            plan: { request in
+                if request.step == 2 {
+                    #expect(request.priorOutcomes.last?.message.contains("State is unchanged after get window state") == true)
+                    #expect(request.priorOutcomes.last?.message.contains("choose a concrete action now") == true)
+                }
+                if request.step <= 2 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .getWindowState,
+                        appBundleID: "com.google.Chrome"
+                    ))
+                }
+                #expect(request.priorOutcomes.last?.message.contains("do not call get_app_state/get_window_state again") == true)
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+            },
+            execute: { _, _ in
+                executionCount += 1
+                return .executed("Observed")
+            }
+        )
+
+        let result = await runtime.run(command: "use the visible page")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(executionCount == 2)
+        #expect(!result.traceEvents.contains { $0.title == "Repeated action stopped" })
+    }
+
+    @Test("stops observation-only loops after larger budget")
+    @MainActor
+    func stopsObservationOnlyLoopsAfterLargerBudget() async {
         var executionCount = 0
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -610,8 +684,8 @@ struct ComputerUsePlannerRuntimeTests {
         let result = await runtime.run(command: "use the visible page")
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
-        #expect(result.message.contains("repeated get window state after two unchanged attempts"))
-        #expect(executionCount == 2)
+        #expect(result.message.contains("repeated get window state after 4 unchanged observations"))
+        #expect(executionCount == 4)
         #expect(result.traceEvents.contains { $0.title == "Repeated action stopped" })
     }
 
