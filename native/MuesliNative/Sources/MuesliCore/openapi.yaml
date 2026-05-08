@@ -1,0 +1,465 @@
+openapi: 3.1.0
+info:
+  title: Muesli Sync API
+  version: "1.0.0"
+  summary: Single-tenant ingest API for the Muesli macOS dictation app.
+  description: |
+    Reference contract between the Muesli Mac client and a self-hosted
+    `muesli-sync-server`. The server is single-tenant: one user, one server,
+    one bearer token (matched in constant time against `MUESLI_SYNC_TOKEN`).
+
+    This document is the **frozen wire-protocol contract**. Both implementations
+    are bound to it. Server CI validates that real responses conform; the client
+    generates its HTTP layer from this spec via `swift-openapi-generator`.
+
+    See `docs/protocol.md` for prose / curl examples, and `SPEC.md` for design
+    rationale.
+  license:
+    name: TBD
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://{host}
+    description: Operator-deployed instance behind a TLS-terminating proxy
+    variables:
+      host:
+        default: meetings.example.com
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: meetings
+    description: Meeting record + audio upload endpoints.
+  - name: health
+    description: Liveness probe.
+
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Auth-required liveness probe.
+      description: |
+        Used by the Mac client's "Test connection" button. Auth is required so
+        the same call validates the bearer token end-to-end.
+      responses:
+        "200":
+          description: Server is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/meetings:
+    post:
+      operationId: createMeeting
+      tags: [meetings]
+      summary: Create a meeting record (idempotent on `clientMeetingId`).
+      description: |
+        First call with a given `clientMeetingId` creates the row and returns
+        `201 Created`. Subsequent calls with the same id and an identical body
+        return `200 OK` with the existing record. A duplicate id with a
+        different body returns `409 Conflict`.
+
+        `audioUploadURL` is omitted from the response when `audio.available` is
+        `false` or the `audio` object is absent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeetingCreateRequest"
+      responses:
+        "201":
+          description: Newly created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingCreateResponse"
+        "200":
+          description: Idempotent replay of an identical body; existing record returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingCreateResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/v1/meetings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MeetingId"
+    get:
+      operationId: getMeeting
+      tags: [meetings]
+      summary: Read back stored meeting metadata.
+      description: |
+        Returns full metadata. The audio body is not served here; the client
+        plays it from local cache. Useful for verification + debugging.
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/meetings/{id}/audio:
+    parameters:
+      - $ref: "#/components/parameters/MeetingId"
+    put:
+      operationId: uploadMeetingAudio
+      tags: [meetings]
+      summary: Stream the WAV body for a meeting.
+      description: |
+        The body is consumed in 1 MiB chunks directly to disk; never buffered
+        into memory. SHA-256 is computed on the fly. If `audio.sha256` was
+        supplied on the create call, the digest is validated before the file is
+        moved into place.
+
+        Re-uploading audio for the same meeting overwrites the previous file
+        (last-write-wins). The Mac client only re-uploads to recover from a
+        partial failure.
+      requestBody:
+        required: true
+        content:
+          audio/wav:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Audio stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudioUploadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Static server-configured token (`MUESLI_SYNC_TOKEN`). Matched in
+        constant time. Single-tenant by design — multi-tenancy is deferred.
+
+  parameters:
+    MeetingId:
+      name: id
+      in: path
+      required: true
+      description: Server-assigned UUID for the meeting.
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    Health:
+      type: object
+      required: [ok, version]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        version:
+          type: string
+          description: Semver string of the server build.
+
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: Human-readable message, suitable for logs.
+        code:
+          type: string
+          description: Machine-readable slug. Stable identifiers; switch on this in the client.
+          enum:
+            - unauthorized
+            - meeting_not_found
+            - client_meeting_id_collision
+            - audio_too_large
+            - unsupported_media_type
+            - validation_error
+            - server_error
+        details:
+          description: Field-level diagnostics for `validation_error`. Shape is implementation-defined.
+          type: object
+          additionalProperties: true
+
+    Template:
+      type: object
+      description: Optional meeting-template metadata.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+
+    AudioMetadata:
+      type: object
+      description: Client's claim about the WAV that *will* be uploaded.
+      properties:
+        available:
+          type: boolean
+          default: true
+          description: When false, the server omits `audioUploadURL` from the create response and a subsequent PUT to `/audio` returns 404.
+        format:
+          type: string
+          enum: [wav]
+          default: wav
+        sizeBytes:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+        sha256:
+          type: string
+          description: Hex-encoded SHA-256 of the WAV body. If non-empty, the server validates it on PUT.
+          pattern: "^[0-9a-fA-F]{64}$"
+
+    MeetingCreateRequest:
+      type: object
+      required: [schemaVersion, clientMeetingId, startTime, completedAt]
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+          description: Wire-format version. Currently 1; mismatched values return `422 validation_error`.
+        clientMeetingId:
+          type: string
+          maxLength: 128
+          description: Client-generated stable id. Server uses it as the idempotency key.
+        title:
+          type: string
+          maxLength: 512
+          default: ""
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: [string, "null"]
+          format: date-time
+        durationSeconds:
+          type: [number, "null"]
+          format: double
+        calendarEventId:
+          type: [string, "null"]
+          maxLength: 256
+        transcript:
+          type: string
+          default: ""
+        wordCount:
+          type: integer
+          minimum: 0
+          default: 0
+        formattedNotes:
+          type: string
+          default: ""
+        manualNotes:
+          type: string
+          default: ""
+        template:
+          $ref: "#/components/schemas/Template"
+        folder:
+          type: [string, "null"]
+          maxLength: 256
+        completedAt:
+          type: string
+          format: date-time
+        audio:
+          $ref: "#/components/schemas/AudioMetadata"
+
+    MeetingCreateResponse:
+      type: object
+      required: [id, clientMeetingId, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        clientMeetingId:
+          type: string
+        audioUploadURL:
+          type: string
+          format: uri
+          description: |
+            Absolute URL the client should PUT the WAV body to. Only present when
+            the create request asserted `audio.available: true`. Stable across
+            idempotent replays so the client can resume an interrupted upload.
+        createdAt:
+          type: string
+          format: date-time
+
+    MeetingDetail:
+      type: object
+      required:
+        - id
+        - clientMeetingId
+        - title
+        - startTime
+        - completedAt
+        - createdAt
+        - updatedAt
+        - audio
+      properties:
+        id:
+          type: string
+          format: uuid
+        clientMeetingId:
+          type: string
+        title:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: [string, "null"]
+          format: date-time
+        durationSeconds:
+          type: [number, "null"]
+          format: double
+        calendarEventId:
+          type: [string, "null"]
+        transcript:
+          type: string
+        wordCount:
+          type: integer
+          minimum: 0
+        formattedNotes:
+          type: string
+        manualNotes:
+          type: string
+        template:
+          $ref: "#/components/schemas/Template"
+        folder:
+          type: string
+        completedAt:
+          type: string
+          format: date-time
+        audio:
+          $ref: "#/components/schemas/StoredAudio"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    StoredAudio:
+      type: object
+      description: Server-side view of audio storage state for a meeting.
+      required: [available, format]
+      properties:
+        available:
+          type: boolean
+        format:
+          type: string
+          enum: [wav]
+        sizeBytes:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+        sha256:
+          type: [string, "null"]
+        uploadedAt:
+          type: [string, "null"]
+          format: date-time
+
+    AudioUploadResponse:
+      type: object
+      required: [id, audioBytes, audioStoredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        audioBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        audioStoredAt:
+          type: string
+          format: date-time
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "Authentication credentials were not provided or were invalid."
+            code: "unauthorized"
+    NotFound:
+      description: No meeting with that id.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "Not found."
+            code: "meeting_not_found"
+    Conflict:
+      description: |
+        Duplicate `clientMeetingId` with a body that differs from the stored payload.
+        Suggests a client bug — the client should not silently retry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "clientMeetingId already exists with a different payload."
+            code: "client_meeting_id_collision"
+    PayloadTooLarge:
+      description: Audio body exceeds `MUESLI_MAX_AUDIO_BYTES` (default 2 GiB).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "Audio body exceeds the configured maximum size."
+            code: "audio_too_large"
+    UnsupportedMediaType:
+      description: Audio PUT received with a Content-Type other than `audio/wav`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "Audio uploads must be sent with Content-Type: audio/wav."
+            code: "unsupported_media_type"
+    ValidationError:
+      description: Schema or field-level validation failed (incl. SHA-256 mismatch on audio).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "Validation failed."
+            code: "validation_error"
+            details:
+              clientMeetingId: ["This field is required."]

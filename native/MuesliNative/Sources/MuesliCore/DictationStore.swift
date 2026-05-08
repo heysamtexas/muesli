@@ -137,6 +137,23 @@ public final class DictationStore {
             // Column may already exist.
         }
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_folder ON meetings(folder_id)", nil, nil, nil)
+
+        let syncQueueSQL = """
+        CREATE TABLE IF NOT EXISTS meeting_sync_queue (
+            meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            last_error TEXT,
+            last_success_at TEXT,
+            server_meeting_id TEXT,
+            audio_upload_url TEXT,
+            audio_uploaded INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON meeting_sync_queue(status);
+        """
+        try exec(syncQueueSQL, db: db)
     }
 
     @discardableResult
@@ -1030,6 +1047,251 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+    }
+
+    // MARK: - Meeting sync queue
+
+    private static let syncQueueColumns = """
+    meeting_id, attempts, last_attempt_at, last_error, server_meeting_id,
+    audio_upload_url, audio_uploaded, status, created_at
+    """
+
+    @discardableResult
+    public func enqueueMeetingSync(meetingID: Int64) throws -> Bool {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        let sql = """
+        INSERT INTO meeting_sync_queue (meeting_id, status)
+        VALUES (?, 'pending')
+        ON CONFLICT(meeting_id) DO UPDATE SET
+            status = CASE WHEN status IN ('done') THEN status ELSE 'pending' END,
+            last_error = CASE WHEN status IN ('done') THEN last_error ELSE NULL END
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        return sqlite3_changes(db) > 0
+    }
+
+    public func meetingSyncEntry(meetingID: Int64) throws -> MeetingSyncQueueEntry? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT \(Self.syncQueueColumns)
+        FROM meeting_sync_queue WHERE meeting_id = ? LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return makeSyncQueueEntry(statement)
+    }
+
+    public func meetingsAwaitingSync() throws -> [MeetingSyncQueueEntry] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT \(Self.syncQueueColumns)
+        FROM meeting_sync_queue
+        WHERE status IN ('pending', 'uploading')
+        ORDER BY meeting_id ASC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var rows: [MeetingSyncQueueEntry] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append(makeSyncQueueEntry(statement))
+        }
+        return rows
+    }
+
+    public func markMeetingSyncStarting(meetingID: Int64, at date: Date = Date()) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        UPDATE meeting_sync_queue
+        SET status = 'uploading',
+            attempts = attempts + 1,
+            last_attempt_at = ?,
+            last_error = NULL
+        WHERE meeting_id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        let now = ISO8601DateFormatter().string(from: date)
+        sqlite3_bind_text(statement, 1, (now as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    public func recordMeetingSyncMetadataUploaded(
+        meetingID: Int64,
+        serverMeetingID: String,
+        audioUploadURL: String?
+    ) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        UPDATE meeting_sync_queue
+        SET server_meeting_id = ?, audio_upload_url = ?
+        WHERE meeting_id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (serverMeetingID as NSString).utf8String, -1, nil)
+        bindOptionalText(audioUploadURL, at: 2, statement: statement)
+        sqlite3_bind_int64(statement, 3, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    public func recordMeetingSyncAudioUploaded(meetingID: Int64) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        UPDATE meeting_sync_queue
+        SET audio_uploaded = 1, audio_upload_url = NULL
+        WHERE meeting_id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    public func markMeetingSyncDone(meetingID: Int64, at date: Date = Date()) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        UPDATE meeting_sync_queue
+        SET status = 'done', last_error = NULL, last_success_at = ?
+        WHERE meeting_id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        let now = ISO8601DateFormatter().string(from: date)
+        sqlite3_bind_text(statement, 1, (now as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 2, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    public func recordMeetingSyncFailure(meetingID: Int64, error: String, terminal: Bool) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        UPDATE meeting_sync_queue
+        SET status = ?, last_error = ?
+        WHERE meeting_id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        let nextStatus = terminal ? "failed" : "pending"
+        sqlite3_bind_text(statement, 1, (nextStatus as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (error as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 3, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    public func meetingSyncStats() throws -> MeetingSyncQueueStats {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        let countSQL = """
+        SELECT
+            SUM(CASE WHEN status IN ('pending', 'uploading') THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+            MAX(last_success_at) AS last_success_at
+        FROM meeting_sync_queue
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, countSQL, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return MeetingSyncQueueStats(pending: 0, failed: 0, lastSuccessAt: nil)
+        }
+        let pending = Int(sqlite3_column_int(statement, 0))
+        let failed = Int(sqlite3_column_int(statement, 1))
+        let lastSuccess: String? = sqlite3_column_type(statement, 2) == SQLITE_NULL
+            ? nil
+            : stringColumn(statement, index: 2)
+        return MeetingSyncQueueStats(pending: pending, failed: failed, lastSuccessAt: lastSuccess)
+    }
+
+    public func pruneCompletedMeetingSyncEntries(olderThan date: Date) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        DELETE FROM meeting_sync_queue
+        WHERE status = 'done' AND last_success_at IS NOT NULL AND last_success_at < ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        let cutoff = ISO8601DateFormatter().string(from: date)
+        sqlite3_bind_text(statement, 1, (cutoff as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    private func makeSyncQueueEntry(_ statement: OpaquePointer?) -> MeetingSyncQueueEntry {
+        let lastAttempt: String? = sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : stringColumn(statement, index: 2)
+        let lastError: String? = sqlite3_column_type(statement, 3) == SQLITE_NULL ? nil : stringColumn(statement, index: 3)
+        let serverMeetingID: String? = sqlite3_column_type(statement, 4) == SQLITE_NULL ? nil : stringColumn(statement, index: 4)
+        let audioUploadURL: String? = sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : stringColumn(statement, index: 5)
+        let status = MeetingSyncStatus(rawValue: stringColumn(statement, index: 7)) ?? .pending
+        return MeetingSyncQueueEntry(
+            meetingID: sqlite3_column_int64(statement, 0),
+            attempts: Int(sqlite3_column_int(statement, 1)),
+            lastAttemptAt: lastAttempt,
+            lastError: lastError,
+            serverMeetingID: serverMeetingID,
+            audioUploadURL: audioUploadURL,
+            audioUploaded: sqlite3_column_int(statement, 6) != 0,
+            status: status,
+            createdAt: stringColumn(statement, index: 8)
+        )
     }
 
     public func databasePath() -> URL {

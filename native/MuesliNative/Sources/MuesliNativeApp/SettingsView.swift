@@ -48,6 +48,7 @@ struct SettingsView: View {
         case dictation
         case computerUse
         case meetings
+        case sync
         case appearance
 
         var id: String { rawValue }
@@ -58,6 +59,7 @@ struct SettingsView: View {
             case .dictation: return "Dictation"
             case .computerUse: return "Computer Use"
             case .meetings: return "Meetings"
+            case .sync: return "Meeting Sync"
             case .appearance: return "Appearance"
             }
         }
@@ -87,6 +89,19 @@ struct SettingsView: View {
     @State private var openRouterFreeModels: [SummaryModelPreset] = []
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
+    @State private var syncTestStatus: SyncTestStatus = .idle
+    @State private var syncStats: MeetingSyncQueueStats = MeetingSyncQueueStats(pending: 0, failed: 0, lastSuccessAt: nil)
+    @State private var syncStatsTimer: Timer?
+
+    enum SyncTestStatus: Equatable {
+        case idle
+        case testing
+        case success(version: String)
+        case unauthorized
+        case invalidEndpoint
+        case unreachable(String)
+        case unexpectedStatus(Int)
+    }
 
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
@@ -269,6 +284,8 @@ struct SettingsView: View {
             computerUseSettingsPane
         case .meetings:
             meetingsSettingsPane
+        case .sync:
+            meetingSyncSettingsPane
         case .appearance:
             appearanceSettingsPane
         }
@@ -597,6 +614,243 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var meetingSyncSettingsPane: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Meeting Sync") {
+                settingsRow("Enable sync", controlWidth: meetingControlWidth) {
+                    settingsSwitch(isOn: appState.config.meetingSyncEnabled) { newValue in
+                        controller.updateConfig { $0.meetingSyncEnabled = newValue }
+                    }
+                }
+                settingsDescription("Push completed meetings to your own server. Local Muesli remains the source of truth.")
+
+                if appState.config.meetingSyncEnabled,
+                   !appState.config.meetingSyncEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    syncWarningBanner(host: appState.config.meetingSyncEndpoint)
+                }
+
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Server URL", controlWidth: meetingControlWidth) {
+                    PastableTextField(
+                        text: appState.config.meetingSyncEndpoint,
+                        placeholder: "https://meetings.example.com",
+                        onChange: { val in controller.updateConfig { $0.meetingSyncEndpoint = val } }
+                    )
+                    .frame(height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Auth token", controlWidth: meetingControlWidth) {
+                    PastableSecureField(
+                        text: appState.config.meetingSyncAuthToken,
+                        placeholder: "MUESLI_SYNC_TOKEN value",
+                        onChange: { val in controller.updateConfig { $0.meetingSyncAuthToken = val } }
+                    )
+                    .frame(height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Test connection", controlWidth: meetingControlWidth) {
+                    syncTestButton
+                }
+                if syncTestStatus != .idle {
+                    syncTestStatusRow
+                }
+            }
+
+            settingsSection("Payload") {
+                settingsRow("Include audio", controlWidth: meetingControlWidth) {
+                    settingsSwitch(isOn: appState.config.meetingSyncIncludeAudio) { newValue in
+                        controller.updateConfig { $0.meetingSyncIncludeAudio = newValue }
+                    }
+                }
+                settingsDescription("Streams the WAV recording from disk after the meeting metadata uploads. Requires “Save meeting recording” under Meetings.")
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Include AI notes", controlWidth: meetingControlWidth) {
+                    settingsSwitch(isOn: appState.config.meetingSyncIncludeNotes) { newValue in
+                        controller.updateConfig { $0.meetingSyncIncludeNotes = newValue }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Include manual notes", controlWidth: meetingControlWidth) {
+                    settingsSwitch(isOn: appState.config.meetingSyncIncludeManualNotes) { newValue in
+                        controller.updateConfig { $0.meetingSyncIncludeManualNotes = newValue }
+                    }
+                }
+            }
+
+            settingsSection("Status") {
+                syncStatusPill
+            }
+        }
+        .onAppear {
+            refreshSyncStats()
+            startSyncStatsTimer()
+        }
+        .onDisappear {
+            stopSyncStatsTimer()
+        }
+    }
+
+    @ViewBuilder
+    private var syncTestButton: some View {
+        Button {
+            runSyncConnectionTest()
+        } label: {
+            HStack(spacing: 6) {
+                if case .testing = syncTestStatus {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "network")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                Text(syncTestStatus == .testing ? "Testing…" : "Test connection")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, MuesliTheme.spacing8)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(syncTestStatus == .testing
+            || appState.config.meetingSyncEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    @ViewBuilder
+    private var syncTestStatusRow: some View {
+        let info = syncTestStatusInfo()
+        HStack(spacing: 6) {
+            Spacer()
+            Circle()
+                .fill(info.color)
+                .frame(width: 6, height: 6)
+            Text(info.text)
+                .font(.system(size: 11))
+                .foregroundStyle(info.color)
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+        }
+        .frame(minHeight: 20)
+    }
+
+    private func syncTestStatusInfo() -> (text: String, color: Color) {
+        switch syncTestStatus {
+        case .idle:
+            return ("", MuesliTheme.textTertiary)
+        case .testing:
+            return ("Testing…", MuesliTheme.textTertiary)
+        case .success(let version):
+            return ("Connected (server v\(version))", MuesliTheme.success)
+        case .unauthorized:
+            return ("Server rejected the token", MuesliTheme.recording)
+        case .invalidEndpoint:
+            return ("URL is not reachable as http/https", MuesliTheme.recording)
+        case .unreachable(let message):
+            return (message, MuesliTheme.recording)
+        case .unexpectedStatus(let code):
+            return ("Unexpected response: HTTP \(code)", MuesliTheme.recording)
+        }
+    }
+
+    private func runSyncConnectionTest() {
+        let endpoint = appState.config.meetingSyncEndpoint
+        let token = appState.config.meetingSyncAuthToken
+        syncTestStatus = .testing
+        Task { @MainActor in
+            let result = await controller.testMeetingSyncConnection(endpoint: endpoint, token: token)
+            switch result {
+            case .success(let version):
+                syncTestStatus = .success(version: version)
+            case .unauthorized:
+                syncTestStatus = .unauthorized
+            case .invalidEndpoint:
+                syncTestStatus = .invalidEndpoint
+            case .unreachable(let message):
+                syncTestStatus = .unreachable(message)
+            case .unexpectedStatus(let code):
+                syncTestStatus = .unexpectedStatus(code)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func syncWarningBanner(host: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(MuesliTheme.accent)
+            Text("Meeting data will be sent to \(host) after each completed meeting.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, MuesliTheme.spacing8)
+    }
+
+    @ViewBuilder
+    private var syncStatusPill: some View {
+        let pending = syncStats.pending
+        let failed = syncStats.failed
+        let lastSync: String = {
+            guard let raw = syncStats.lastSuccessAt,
+                  let date = ISO8601DateFormatter().date(from: raw) else {
+                return "never"
+            }
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .short
+            return formatter.localizedString(for: date, relativeTo: Date())
+        }()
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Last sync: \(lastSync)")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(MuesliTheme.textPrimary)
+            HStack(spacing: 12) {
+                Label("\(pending) queued", systemImage: "tray")
+                    .font(.system(size: 11))
+                    .foregroundStyle(pending > 0 ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                Label("\(failed) failed", systemImage: "xmark.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(failed > 0 ? MuesliTheme.recording : MuesliTheme.textTertiary)
+                Spacer()
+                Button {
+                    controller.kickMeetingSync()
+                    refreshSyncStats()
+                } label: {
+                    Text("Sync now")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .disabled(!appState.config.meetingSyncEnabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func refreshSyncStats() {
+        syncStats = controller.meetingSyncStats()
+    }
+
+    private func startSyncStatsTimer() {
+        stopSyncStatsTimer()
+        let timer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { _ in
+            Task { @MainActor in
+                refreshSyncStats()
+            }
+        }
+        timer.tolerance = 1.0
+        syncStatsTimer = timer
+    }
+
+    private func stopSyncStatsTimer() {
+        syncStatsTimer?.invalidate()
+        syncStatsTimer = nil
     }
 
     private var appearanceSettingsPane: some View {

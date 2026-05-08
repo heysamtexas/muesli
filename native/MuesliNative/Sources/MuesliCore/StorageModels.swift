@@ -270,6 +270,59 @@ public struct DictationStats: Codable, Sendable {
     }
 }
 
+public enum MeetingSyncStatus: String, Codable, Sendable, CaseIterable {
+    case pending
+    case uploading
+    case done
+    case failed
+}
+
+public struct MeetingSyncQueueEntry: Equatable, Sendable {
+    public let meetingID: Int64
+    public let attempts: Int
+    public let lastAttemptAt: String?
+    public let lastError: String?
+    public let serverMeetingID: String?
+    public let audioUploadURL: String?
+    public let audioUploaded: Bool
+    public let status: MeetingSyncStatus
+    public let createdAt: String
+
+    public init(
+        meetingID: Int64,
+        attempts: Int,
+        lastAttemptAt: String?,
+        lastError: String?,
+        serverMeetingID: String?,
+        audioUploadURL: String?,
+        audioUploaded: Bool,
+        status: MeetingSyncStatus,
+        createdAt: String
+    ) {
+        self.meetingID = meetingID
+        self.attempts = attempts
+        self.lastAttemptAt = lastAttemptAt
+        self.lastError = lastError
+        self.serverMeetingID = serverMeetingID
+        self.audioUploadURL = audioUploadURL
+        self.audioUploaded = audioUploaded
+        self.status = status
+        self.createdAt = createdAt
+    }
+}
+
+public struct MeetingSyncQueueStats: Equatable, Sendable {
+    public let pending: Int
+    public let failed: Int
+    public let lastSuccessAt: String?
+
+    public init(pending: Int, failed: Int, lastSuccessAt: String?) {
+        self.pending = pending
+        self.failed = failed
+        self.lastSuccessAt = lastSuccessAt
+    }
+}
+
 public struct MeetingStats: Codable, Sendable {
     public let totalWords: Int
     public let totalMeetings: Int

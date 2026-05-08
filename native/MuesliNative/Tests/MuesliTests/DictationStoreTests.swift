@@ -1074,4 +1074,166 @@ struct DictationStoreTests {
         #expect(lower.count == 1)
         #expect(mixed.count == 1)
     }
+
+    // MARK: - Meeting sync queue
+
+    private func insertSampleMeeting(_ store: DictationStore) throws -> Int64 {
+        try store.insertMeeting(
+            title: "Sync target",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(60),
+            rawTranscript: "hello",
+            formattedNotes: "## Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+    }
+
+    @Test("enqueueMeetingSync inserts a pending row and is idempotent")
+    func enqueueMeetingSyncIdempotent() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry?.status == .pending)
+        #expect(entry?.attempts == 0)
+        #expect(entry?.audioUploaded == false)
+
+        let pending = try store.meetingsAwaitingSync()
+        #expect(pending.count == 1)
+    }
+
+    @Test("enqueue after failure resets to pending and clears last_error")
+    func enqueueResetsAfterFailure() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.recordMeetingSyncFailure(meetingID: meetingID, error: "boom", terminal: true)
+
+        let failedEntry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(failedEntry?.status == .failed)
+        #expect(failedEntry?.lastError == "boom")
+
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        let revived = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(revived?.status == .pending)
+        #expect(revived?.lastError == nil)
+    }
+
+    @Test("enqueue does not reset done entries")
+    func enqueueLeavesDoneEntries() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.markMeetingSyncDone(meetingID: meetingID)
+
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry?.status == .done)
+    }
+
+    @Test("markMeetingSyncStarting increments attempts and sets uploading status")
+    func markStartingIncrements() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.markMeetingSyncStarting(meetingID: meetingID, at: stamp)
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry?.status == .uploading)
+        #expect(entry?.attempts == 1)
+        #expect(entry?.lastAttemptAt != nil)
+    }
+
+    @Test("recordMetadataUploaded persists server id and upload URL")
+    func recordsMetadata() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.markMeetingSyncStarting(meetingID: meetingID)
+        try store.recordMeetingSyncMetadataUploaded(
+            meetingID: meetingID,
+            serverMeetingID: "srv-abc",
+            audioUploadURL: "http://example/audio"
+        )
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry?.serverMeetingID == "srv-abc")
+        #expect(entry?.audioUploadURL == "http://example/audio")
+    }
+
+    @Test("recordMeetingSyncAudioUploaded clears upload URL and sets uploaded flag")
+    func recordsAudioUploaded() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.markMeetingSyncStarting(meetingID: meetingID)
+        try store.recordMeetingSyncMetadataUploaded(
+            meetingID: meetingID,
+            serverMeetingID: "srv-abc",
+            audioUploadURL: "http://example/audio"
+        )
+        try store.recordMeetingSyncAudioUploaded(meetingID: meetingID)
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry?.audioUploaded == true)
+        #expect(entry?.audioUploadURL == nil)
+    }
+
+    @Test("markMeetingSyncDone records a success timestamp")
+    func markDonePersistsSuccessAt() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        let success = Date(timeIntervalSince1970: 1_700_000_500)
+        try store.markMeetingSyncDone(meetingID: meetingID, at: success)
+        let stats = try store.meetingSyncStats()
+        #expect(stats.lastSuccessAt != nil)
+        #expect(stats.failed == 0)
+        #expect(stats.pending == 0)
+    }
+
+    @Test("recordFailure with terminal=false keeps the entry pending")
+    func recordFailureNonTerminalStaysPending() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.markMeetingSyncStarting(meetingID: meetingID)
+        try store.recordMeetingSyncFailure(meetingID: meetingID, error: "transient", terminal: false)
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry?.status == .pending)
+        #expect(entry?.lastError == "transient")
+    }
+
+    @Test("meetingSyncStats counts pending vs failed")
+    func meetingSyncStatsCounts() throws {
+        let store = try makeStore()
+        let mA = try insertSampleMeeting(store)
+        let mB = try insertSampleMeeting(store)
+        let mC = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: mA)
+        try store.enqueueMeetingSync(meetingID: mB)
+        try store.enqueueMeetingSync(meetingID: mC)
+        try store.recordMeetingSyncFailure(meetingID: mB, error: "x", terminal: true)
+        try store.markMeetingSyncStarting(meetingID: mC)
+        try store.markMeetingSyncDone(meetingID: mC)
+
+        let stats = try store.meetingSyncStats()
+        #expect(stats.pending == 1) // mA
+        #expect(stats.failed == 1)  // mB
+        #expect(stats.lastSuccessAt != nil)
+    }
+
+    @Test("DELETE on meetings cascades to sync queue rows")
+    func deleteCascades() throws {
+        let store = try makeStore()
+        let meetingID = try insertSampleMeeting(store)
+        try store.enqueueMeetingSync(meetingID: meetingID)
+        try store.deleteMeeting(id: meetingID)
+        let entry = try store.meetingSyncEntry(meetingID: meetingID)
+        #expect(entry == nil)
+    }
 }

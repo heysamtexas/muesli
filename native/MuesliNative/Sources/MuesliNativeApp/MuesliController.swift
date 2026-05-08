@@ -69,12 +69,38 @@ struct CompletedMeetingPersistenceResult {
     let recordingSaveError: MeetingLifecycleError?
 }
 
+/// Thread-safe holder for AppConfig so background actors (e.g., MeetingSyncWorker)
+/// can read the latest snapshot without hopping to the main actor.
+final class ConfigBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: AppConfig
+
+    init(initial: AppConfig) {
+        self.stored = initial
+    }
+
+    var value: AppConfig {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func update(_ config: AppConfig) {
+        lock.lock()
+        defer { lock.unlock() }
+        stored = config
+    }
+}
+
 @MainActor
 final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore = ConfigStore()
     private let dictationStore: DictationStore
     private let meetingHookDispatcher: MeetingHookDispatching
+    private let meetingSyncClient: MeetingSyncClient
+    private let meetingSyncWorker: MeetingSyncWorker
+    private let configBox: ConfigBox
     let transcriptionCoordinator = TranscriptionCoordinator()
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
@@ -151,10 +177,24 @@ final class MuesliController: NSObject {
     ) {
         let loadedConfig = configStore.load()
         self.runtime = runtime
-        self.dictationStore = dictationStore ?? DictationStore(
+        let store = dictationStore ?? DictationStore(
             databaseURL: MuesliPaths.defaultDatabaseURL(appName: AppIdentity.supportDirectoryName)
         )
+        self.dictationStore = store
         self.meetingHookDispatcher = meetingHookDispatcher
+
+        // Sync runs IN ADDITION to the local hook, not in place of it.
+        let configBox = ConfigBox(initial: loadedConfig)
+        self.meetingSyncClient = MeetingSyncClient(
+            store: store,
+            configProvider: { configBox.value }
+        )
+        self.meetingSyncWorker = MeetingSyncWorker(
+            store: store,
+            client: self.meetingSyncClient,
+            configProvider: { configBox.value }
+        )
+        self.configBox = configBox
         self.config = loadedConfig
         if loadedConfig.recordingColorHex != "1e1e2e" {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
@@ -369,6 +409,10 @@ final class MuesliController: NSObject {
         if canRunMainApp {
             PostInstallChecker.check()
         }
+
+        if canRunMainApp && config.meetingSyncEnabled {
+            meetingSyncWorker.start()
+        }
     }
 
     func shutdown() {
@@ -402,6 +446,7 @@ final class MuesliController: NSObject {
             await transcriptionCoordinator.shutdown()
         }
         indicator.close()
+        meetingSyncWorker.stop()
         CoreAudioSystemRecorder.cleanupStaleDevices()
     }
 
@@ -567,8 +612,17 @@ final class MuesliController: NSObject {
     }
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
+        let previousSyncEnabled = config.meetingSyncEnabled
         mutate(&config)
         configStore.save(config)
+        configBox.update(config)
+        if previousSyncEnabled != config.meetingSyncEnabled {
+            if config.meetingSyncEnabled {
+                meetingSyncWorker.start()
+            } else {
+                meetingSyncWorker.stop()
+            }
+        }
         MuesliTheme.accentOverrideHex = config.recordingColorHex == "1e1e2e" ? nil : config.recordingColorHex
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
@@ -2002,6 +2056,18 @@ final class MuesliController: NSObject {
         syncAppState()
     }
 
+    func testMeetingSyncConnection(endpoint: String, token: String) async -> MeetingSyncConnectionTestResult {
+        await meetingSyncClient.testConnection(endpoint: endpoint, token: token)
+    }
+
+    func meetingSyncStats() -> MeetingSyncQueueStats {
+        (try? dictationStore.meetingSyncStats()) ?? MeetingSyncQueueStats(pending: 0, failed: 0, lastSuccessAt: nil)
+    }
+
+    func kickMeetingSync() {
+        meetingSyncWorker.kick()
+    }
+
     func canDeleteMeeting(_ meeting: MeetingRecord) -> Bool {
         guard meeting.id != activeMeetingID else { return false }
         if staleLiveMeetingRecoveryFailures.contains(meeting.id) {
@@ -2692,7 +2758,25 @@ final class MuesliController: NSObject {
             completedAt: result.endTime,
             config: config
         )
+        if config.meetingSyncEnabled {
+            ensureMeetingSyncInstallID()
+            do {
+                try dictationStore.enqueueMeetingSync(meetingID: persistenceResult.meetingID)
+                meetingSyncWorker.kick()
+            } catch {
+                fputs("[muesli-native] failed to enqueue meeting sync: \(error)\n", stderr)
+            }
+        }
         return persistenceResult
+    }
+
+    /// Lazily populates `config.meetingSyncInstallID` on first sync. Once set
+    /// the value is permanent for this install — reinstalls (db+config wiped)
+    /// generate a fresh id, which is exactly the collision-avoidance contract.
+    private func ensureMeetingSyncInstallID() {
+        guard config.meetingSyncInstallID.isEmpty else { return }
+        let installID = String(UUID().uuidString.lowercased().prefix(8))
+        updateConfig { $0.meetingSyncInstallID = installID }
     }
 
     private func persistMeetingRecordingIfNeeded(for result: MeetingSessionResult) throws -> String? {

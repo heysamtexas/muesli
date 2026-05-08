@@ -176,6 +176,20 @@ Key implementation details:
 3. **Merge to main** via squash merge
 4. **Release:** `./scripts/release.sh` → notarize → GitHub Releases
 
+### Meeting Sync wire protocol (`MuesliCore/openapi.yaml`)
+
+The vendored copy at `native/MuesliNative/Sources/MuesliCore/openapi.yaml` is the source for `swift-openapi-generator` codegen. It MUST stay byte-identical to `docs/openapi.yaml` in the sibling [`collide-ai/muesli-sync-server`](https://github.com/collide-ai/muesli-sync-server) repo.
+
+When the server-side spec changes, re-vendor before merging:
+
+```bash
+cp ~/src/playground/muesli-sync-server/docs/openapi.yaml \
+   native/MuesliNative/Sources/MuesliCore/openapi.yaml
+swift test --package-path native/MuesliNative
+```
+
+Generated `Client.swift` / `Types.swift` are NOT committed — produced fresh by the SwiftPM build plugin under `.build/plugins/outputs/...`. Drift detection is currently manual; if it becomes a recurring miss, see the spec-drift CI plan in the Phase 2 sync handoff.
+
 ## Calendar Notification Pipeline
 
 Event-driven architecture for meeting notifications:

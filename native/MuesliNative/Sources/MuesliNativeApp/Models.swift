@@ -613,6 +613,17 @@ struct AppConfig: Codable {
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
+    var meetingSyncEnabled: Bool = false
+    var meetingSyncEndpoint: String = ""
+    var meetingSyncAuthToken: String = ""
+    var meetingSyncIncludeAudio: Bool = true
+    var meetingSyncIncludeNotes: Bool = true
+    var meetingSyncIncludeManualNotes: Bool = true
+    /// Per-install identifier mixed into `clientMeetingId` so reinstalls that
+    /// reset local meeting row IDs don't collide with prior server records.
+    /// Auto-populated by MuesliController on first sync; never blank for
+    /// configs persisted by a running build.
+    var meetingSyncInstallID: String = ""
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -672,6 +683,13 @@ struct AppConfig: Codable {
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
         case meetingHookTimeoutSeconds = "meeting_hook_timeout_seconds"
+        case meetingSyncEnabled = "meeting_sync_enabled"
+        case meetingSyncEndpoint = "meeting_sync_endpoint"
+        case meetingSyncAuthToken = "meeting_sync_auth_token"
+        case meetingSyncIncludeAudio = "meeting_sync_include_audio"
+        case meetingSyncIncludeNotes = "meeting_sync_include_notes"
+        case meetingSyncIncludeManualNotes = "meeting_sync_include_manual_notes"
+        case meetingSyncInstallID = "meeting_sync_install_id"
     }
 
     init() {}
@@ -742,6 +760,13 @@ struct AppConfig: Codable {
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath
         meetingHookTimeoutSeconds = (try? c.decode(Int.self, forKey: .meetingHookTimeoutSeconds)) ?? defaults.meetingHookTimeoutSeconds
+        meetingSyncEnabled = (try? c.decode(Bool.self, forKey: .meetingSyncEnabled)) ?? defaults.meetingSyncEnabled
+        meetingSyncEndpoint = (try? c.decode(String.self, forKey: .meetingSyncEndpoint)) ?? defaults.meetingSyncEndpoint
+        meetingSyncAuthToken = (try? c.decode(String.self, forKey: .meetingSyncAuthToken)) ?? defaults.meetingSyncAuthToken
+        meetingSyncIncludeAudio = (try? c.decode(Bool.self, forKey: .meetingSyncIncludeAudio)) ?? defaults.meetingSyncIncludeAudio
+        meetingSyncIncludeNotes = (try? c.decode(Bool.self, forKey: .meetingSyncIncludeNotes)) ?? defaults.meetingSyncIncludeNotes
+        meetingSyncIncludeManualNotes = (try? c.decode(Bool.self, forKey: .meetingSyncIncludeManualNotes)) ?? defaults.meetingSyncIncludeManualNotes
+        meetingSyncInstallID = (try? c.decode(String.self, forKey: .meetingSyncInstallID)) ?? defaults.meetingSyncInstallID
     }
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {
