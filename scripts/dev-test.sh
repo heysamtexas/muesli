@@ -58,13 +58,31 @@ print('  Onboarding reset (data preserved)')
 "
 fi
 
-# Build with isolated identity
-echo "Building MuesliDev (debug, signed)..."
+# Pick the most stable codesigning identity available so that AX, Screen
+# Recording, and Input Monitoring grants persist across rebuilds. Adhoc
+# signing changes identity every build and silently invalidates TCC grants.
+SIGN_IDENTITY=""
+IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+for prefix in "Developer ID Application: Pranav Hari Guruvayurappan" "Apple Development:" "MuesliDev Self Signed"; do
+  match="$(printf '%s\n' "$IDENTITIES" | grep -F "\"$prefix" | head -n1 | sed -E 's/^[^"]*"([^"]+)".*$/\1/' || true)"
+  if [[ -n "$match" ]]; then
+    SIGN_IDENTITY="$match"
+    break
+  fi
+done
+
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  "$ROOT/scripts/ensure-dev-cert.sh"
+  SIGN_IDENTITY="MuesliDev Self Signed"
+fi
+
+echo "Building MuesliDev (debug, signed as \"$SIGN_IDENTITY\")..."
 MUESLI_APP_NAME=MuesliDev \
 MUESLI_BUNDLE_ID=com.muesli.dev \
 MUESLI_SUPPORT_DIR_NAME=MuesliDev \
 MUESLI_DISPLAY_NAME=MuesliDev \
 MUESLI_SPARKLE_FEED_URL="" \
+MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY" \
 "$ROOT/scripts/build_native_app.sh" debug
 
 echo ""
